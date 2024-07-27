@@ -1,6 +1,7 @@
 import datetime
 from bs4 import BeautifulSoup
 import requests
+import re
 
 from granary import source
 
@@ -39,7 +40,10 @@ class ArchiveOfOurOwn(source.Source):
 
             author = [author.text for author in work.find_all('a', rel='author')]
             if not len(author):
-                author = [work.find('h4').encode_contents().decode().split('<!-- do not cache -->')[1].strip()]
+                if "by Anonymous" in re.sub(r"\s+", " ", work.find('h4').text, re.MULTILINE):
+                    author = "Anonymous"
+                else:
+                    author = [work.find('h4').encode_contents().decode().split('<!-- do not cache -->')[1].strip()]
 
             author = ", ".join(author)
 
