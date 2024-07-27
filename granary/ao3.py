@@ -47,6 +47,8 @@ class ArchiveOfOurOwn(source.Source):
 
             author = ", ".join(author)
 
+            title = work.find('h4').find("a").text
+
             work_url = f'https://archiveofourown.org/works/{work_id}'
             if chapter_id:
                 work_url += f'/chapters/{chapter_id}'
@@ -64,6 +66,7 @@ class ArchiveOfOurOwn(source.Source):
                 'content': work.encode_contents().decode(),
                 'content_is_html': True,
                 'url': work_url,
+                'title': title
             }
 
             activities_works.append({
