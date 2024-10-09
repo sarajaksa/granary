@@ -283,22 +283,43 @@ Changelog
 
 ### 7.1 - unreleased
 
+* `as1`:
+  * Add new `is_dm` `recipient_if_dm`, and `is_audience` functions.
 * `as2`:
   * Add [`sensitive`](https://swicg.github.io/miscellany/#sensitive) support.
+  * Add new `is_server_actor` function ([FEP-d556](https://codeberg.org/fediverse/fep/src/branch/main/fep/d556/fep-d556.md), [discussion](https://socialhub.activitypub.rocks/t/fep-d556-server-level-actor-discovery-using-webfinger/3861)).
+  * `from_as1`:
+    * Always convert images to objects with `type: Image`, never to bare string URLs ([bridgy-fed#/1000](https://github.com/snarfed/bridgy-fed/issues/1000)).
+    * Bug fix for converting links to facets when the link text is the link URL.
+  * `to_as1`:
+    * Handle other types of tags better, eg non-standard `Hashtag` and inner `tag` field for name.
+    * Bug fix for videos, `mimeType` goes in outer object, not in `stream`.
+    * Bug fix for `to`/`cc` with mixed dict and string elements.
 * `atom`:
   * `atom_to_activity/ies`: Get URL from `link` for activities as well as objects. ([Thanks @imax9000!](https://github.com/snarfed/granary/issues/752))
 * `bluesky`:
   * Translate Bluesky `app.bsky.feed.post#langs` to/from AS1 `contentMap` (which isn't officially part of AS1; we steal it from AS2).
   * Translate AS2 `sensitive` on posts to Bluesky `graphic-media` self label, and many Bluesky self labels back to `sensitive` with content warning(s) in `summary`.
+  * Translate AS1/2 DMs to/from Bluesky chats.
+  * Translate video embeds in posts.
+  * `create`/`previewCreate`:
+    * If `inReplyTo` isn't a Bluesky URL or AT URI, return `CreationResult` instead of raising `ValueError`.
   * `from_as1`:
     * Convert `article`s to external embeds with no post text.
     * Add new `as_embed` boolean kwarg to do the same thing for any object.
     * When truncating and adding a link to the original post, use `id` if `url` is not available ([snarfed/bridgy-fed#1155](https://github.com/snarfed/bridgy-fed/issues/1155)).
     * If the input object has `inReplyTo` or `object` or `target` with no recognizable ATProto or Bluesky object, raise `ValueError`.
     * Omit images that aren't in `blobs`.
+    * Bug fix for quote posts with text content that's longer than Bluesky's limit ([snarfed/bridgy-fed#1197](https://github.com/snarfed/bridgy-fed/issues/1197)).
+    * When a `flag` has multiple objects, use the first one that's an ATProto record.
+    * Handle URLs more carefully, don't add link facets with invalid `uri`s.
+    * Bug fix: handle HTML links with `title` in `content` correctly.
   * `to_as1`:
     * Extract links from `app.bsky.actor.profile#description` into `url`/`urls` fields
     * Bug fix: first URL (singular) goes in `url`, list of URLs goes in `urls`.
+    * Bug fix: handle hashtags with regexp special characters.
+    * Support string and bytes CIDs in blob `ref`s as well as `CID` instances.
+  * `Bluesky.get_activities`: skip unknown record types instead of raising `ValueError`.
 * `rss`:
   * Support image enclosures, both directions.
 

@@ -64,7 +64,10 @@ class ActivityStreams2Test(testutil.TestCase):
     })['icon'])
 
   def test_from_as1_icon_prefers_mastodon_allowed_extension(self):
-    self.assertEqual('/pic.jpg', as2.from_as1({
+    self.assertEqual({
+      'type': 'Image',
+      'url': '/pic.jpg',
+    }, as2.from_as1({
       'objectType': 'person',
       'image': [
         '/pic.ico',
@@ -88,7 +91,10 @@ class ActivityStreams2Test(testutil.TestCase):
     })['icon'])
 
   def test_from_as1_icon_non_person(self):
-    self.assertEqual('/pic.jpg', as2.from_as1({
+    self.assertEqual({
+      'type': 'Image',
+      'url': '/pic.jpg',
+    }, as2.from_as1({
       'objectType': 'application',
       'image': '/pic.jpg',
     })['icon'])
@@ -131,6 +137,19 @@ class ActivityStreams2Test(testutil.TestCase):
       ],
       'content': 'Please take a look at this user and their posts',
       'to': 'http://bob',
+    }))
+
+  def test_from_as1_image(self):
+    self.assertEqual({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      'type': 'Note',
+      'image': {
+        'type': 'Image',
+        'url': 'http://pic/ture.jpg',
+      },
+    }, as2.from_as1({
+      'objectType': 'note',
+      'image': 'http://pic/ture.jpg',
     }))
 
   def test_from_as1_link_attachment(self):
@@ -420,7 +439,13 @@ class ActivityStreams2Test(testutil.TestCase):
 
   def test_from_as1_person_propertyvalue_attachment_strips_home_page_slash(self):
     self.assert_equals({
-      '@context': 'https://www.w3.org/ns/activitystreams',
+      '@context': [
+        'https://www.w3.org/ns/activitystreams',
+        {
+          'schema': 'http://schema.org#',
+          'PropertyValue': 'schema:PropertyValue'
+        },
+      ],
       'type': 'Person',
       'id': 'tag:example.com,2011:martin',
       'url': 'https://example.com/',
@@ -499,17 +524,6 @@ class ActivityStreams2Test(testutil.TestCase):
   # https://docs.joinmastodon.org/spec/activitypub/#Flag
   def test_to_as1_flag(self):
     self.assertEqual({
-      '@context': 'https://www.w3.org/ns/activitystreams',
-      'type': 'Flag',
-      'id': 'http://flag',
-      'actor': 'http://alice',
-      'object': [
-        'http://bob',
-        'http://post',
-      ],
-      'content': 'Please take a look at this user and their posts',
-      'to': ['http://bob'],
-    }, as2.from_as1({
       'objectType': 'activity',
       'verb': 'flag',
       'id': 'http://flag',
@@ -520,7 +534,18 @@ class ActivityStreams2Test(testutil.TestCase):
       ],
       'content': 'Please take a look at this user and their posts',
       # note that this is the user being reported
-      'to': 'http://bob',
+      'to': [{'id': 'http://bob'}],
+    }, as2.to_as1({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      'type': 'Flag',
+      'id': 'http://flag',
+      'actor': 'http://alice',
+      'object': [
+        'http://bob',
+        'http://post',
+      ],
+      'content': 'Please take a look at this user and their posts',
+      'to': ['http://bob'],
     }))
 
   def test_to_as1_update_string_object(self):
@@ -546,6 +571,15 @@ class ActivityStreams2Test(testutil.TestCase):
       ],
       'type' : 'Note',
       'sensitive': True,
+    }))
+
+  def test_to_as1_to_cc(self):
+    self.assert_equals({
+      'to' : [{'id': 'foo'}, {'objectType': 'group', 'alias': '@unlisted'}],
+      'cc': [{'id': 'baz'}, {'id': 'as:Public'}],
+    }, as2.to_as1({
+      'to' : 'foo',
+      'cc': [{'id': 'baz'}, 'as:Public'],
     }))
 
   def test_link_tags(self):
@@ -579,3 +613,17 @@ foo
         {'url': 'http://baz'},
       ],
     }, obj)
+
+  def test_is_server_actor(self):
+    self.assertFalse(as2.is_server_actor({}))
+
+    for expected, id in (
+        (True, 'http://a/'),
+        (True, 'http://a/actor'),
+        (True, 'http://a/internal/fetch'),
+        (False, None),
+        (False, ''),
+        (False, '/me'),
+        (False, '/users/me'),
+    ):
+      self.assertEqual(expected, as2.is_server_actor({'id': id}))

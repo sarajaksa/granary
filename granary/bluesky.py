@@ -18,6 +18,7 @@ import urllib.parse
 from bs4 import BeautifulSoup
 from lexrpc import Client
 from lexrpc.base import Base, NSID_RE
+from multiformats import CID
 from oauth_dropins.webutil import util
 from oauth_dropins.webutil.util import trim_nulls
 import requests
@@ -53,11 +54,12 @@ DID_WEB_PATTERN = re.compile(r'^did:web:' + HANDLE_REGEX)
 _CHARS = 'a-zA-Z0-9-.:'
 # TODO: add query and fragment? they're currently unused in the protocol
 # https://atproto.com/specs/at-uri-scheme#structure
+# NOTE: duplicated in lexrpc.base!
 AT_URI_PATTERN = re.compile(rf"""
     ^at://
      (?P<repo>[{_CHARS}]+)
       (?:/(?P<collection>[a-zA-Z0-9-.]+)
-       (?:/(?P<rkey>[{_CHARS}]+))?)?
+       (?:/(?P<rkey>[{_CHARS}~_]+))?)?
     $""", re.VERBOSE)
 
 # Maps AT Protocol NSID collections to path elements in bsky.app URLs.
@@ -131,9 +133,11 @@ DEFAULT_APPVIEW = 'https://api.bsky.app'
 # https://github.com/bluesky-social/atproto/blob/main/packages/api/docs/labels.md#label-behaviors
 NO_AUTHENTICATED_LABEL = '!no-unauthenticated'
 
-# https://github.com/snarfed/atproto/blob/f2f8de63b333448d87c364578e023ddbb63b8b25/lexicons/com/atproto/label/defs.json#L139-L154
-# Bluesky => AS1
-# Text copied from:
+# Bluesky => AS1 labels
+#
+# https://docs.bsky.app/docs/advanced-guides/moderation#global-label-values
+# https://public.api.bsky.app/xrpc/app.bsky.labeler.getServices?dids=did%3Aplc%3Aar7c4by46qjdydhdevvrndac&detailed=true
+# https://github.com/bluesky-social/atproto/blob/f2f8de63b333448d87c364578e023ddbb63b8b25/lexicons/com/atproto/label/defs.json#L139-L154
 # https://github.com/bluesky-social/social-app/blob/3627a249ffb32e4c0f84597f8f9adf228ee90a8f/src/lib/moderation/useGlobalLabelStrings.ts
 # https://github.com/bluesky-social/social-app/blob/3627a249ffb32e4c0f84597f8f9adf228ee90a8f/bskyembed/src/labels.ts
 SENSITIVE_LABELS = {
@@ -148,11 +152,12 @@ SENSITIVE_LABELS = {
 # AS1 => Bluesky
 SENSITIVE_LABEL = 'graphic-media'
 
-LEXRPC_BASE = Base(truncate=True)
+# TODO: bring back validate? or remove?
+LEXRPC_TRUNCATE = Base(truncate=True, validate=False)
 
 # TODO: html2text doesn't escape ]s in link text, which breaks this, eg
 # <a href="http://post">ba](r</a> turns into [ba](r](http://post)
-MARKDOWN_LINK_RE = re.compile(r'\[(?P<text>.*?)\]\((?P<url>.*?)\)')
+MARKDOWN_LINK_RE = re.compile(r'\[(?P<text>.*?)\]\((?P<url>[^ )]*)( "[^"]*")?\)')
 
 ELLIPSIS = ' […]'
 
@@ -322,10 +327,13 @@ def from_as1_to_strong_ref(obj, client=None, value=False):
   Returns:
     dict: ATProto ``com.atproto.repo.strongRef`` record
   """
-  at_uri = Bluesky.post_id((obj.get('id') or as1.get_url(obj))
-                           if isinstance(obj, dict) else obj
-                           ) or ''
-  match = AT_URI_PATTERN.match(at_uri)
+  id = (obj.get('id') or as1.get_url(obj)) if isinstance(obj, dict) else obj
+  if match := AT_URI_PATTERN.match(id):
+    at_uri = id
+  else:
+    at_uri = Bluesky.post_id(id) or ''
+    match = AT_URI_PATTERN.match(at_uri)
+
   if not match or not client:
     return {
       'uri': at_uri,
@@ -431,9 +439,10 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
   Args:
     obj (dict): AS1 object or activity
     out_type (str): desired output lexicon ``$type``
-    blobs (dict): optional mapping from str URL to ``blob`` dict to use in the
-      returned object. If not provided, or if this doesn't have an ``image`` or
-      similar URL in the input object, its output blob will be omitted.
+    blobs (dict): optional mapping from str URL to ``$type: blob`` dict (with
+      ``ref``, ``mimeType``, and ``size``) to use in the returned object. If not
+      provided, or if this doesn't have an ``image`` or similar URL in the input
+      object, its output blob will be omitted.
     client (Bluesky or lexrpc.Client): optional; if provided, this will be used
       to make API calls to PDSes to fetch and populate CIDs for records
       referenced by replies, likes, reposts, etc.
@@ -522,7 +531,7 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
 
     if not out_type or out_type == 'app.bsky.actor.profile':
       ret = trim_nulls({**ret, '$type': 'app.bsky.actor.profile'})
-      return LEXRPC_BASE._maybe_validate('app.bsky.actor.profile', 'record', ret)
+      return LEXRPC_TRUNCATE.validate('app.bsky.actor.profile', 'record', ret)
 
     did_web = ''
     if id and id.startswith('did:web:'):
@@ -594,14 +603,26 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
     }
 
   elif type == 'flag':
-    if not inner_obj:
-      raise ValueError('flag activity requires object')
+    # use the first object that we can get an ATProto DID or URI/CID for
+    post_ref = repo_ref = None
+    for inner in as1.get_objects(activity):
+      if inner.get('id', '').startswith('did:'):
+        repo_ref = {
+          '$type': 'com.atproto.admin.defs#repoRef',
+          'did': inner['id'],
+        }
+      elif not post_ref or not post_ref.get('cid'):
+        post_ref = {
+          '$type': 'com.atproto.repo.strongRef',
+          **from_as1_to_strong_ref(inner, client=client),
+        }
+
+    if not (post_ref and post_ref.get('cid')) and not repo_ref:
+      raise ValueError('flag activity requires at:// or did: object')
+
     ret = {
       '$type': 'com.atproto.moderation.createReport#input',
-      'subject': {
-        '$type': 'com.atproto.repo.strongRef',
-        **from_as1_to_strong_ref(inner_obj, client=client),
-      },
+      'subject': post_ref or repo_ref,
       # https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/moderation/defs.json#
       'reasonType': 'com.atproto.moderation.defs#reasonOther',
       # https://github.com/bluesky-social/atproto/blob/651d4c2a3447525c68d3bf1b8492bdafb0a88c66/lexicons/com/atproto/moderation/createReport.json#L21
@@ -637,33 +658,42 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
             'alt': alt,
           })
 
-    # Bluesky doesn't currently handle videos. if the post has a video, add a
-    # [Video] label to the original post link.
-    #
-    # by default, original post link goes into an external embed. Bluesky can't
-    # do both images and an external embed in the same post though,
-    # https://github.com/bluesky-social/atproto/discussions/2575 , so if the
-    # post has images, put the original post link at the end of the text
-    # instead, after truncating.
+    # first video => embed
     attachments = util.get_list(obj, 'attachments')
-    has_video = any(a.get('objectType') == 'video' for a in attachments)
+    video = video_embed = video_record_embed = None
+    for att in attachments:
+      url = util.get_url(att, 'stream')
+      blob = blobs.get(url)
+      if url and blob and as1.object_type(att) == 'video':
+        video = url
+        alt = att.get('displayName') or ''
+        video_embed = {
+          '$type': 'app.bsky.embed.video#view',
+          'cid': blob_cid(blob),
+          'playlist': '?',
+          'alt': alt,
+        }
+        video_record_embed = {
+          '$type': 'app.bsky.embed.video',
+          'video': blob,
+          'alt': alt,
+        }
+        break
+
+    # by default, original post link goes into an external embed. Bluesky can't
+    # do either images or video along with an external embed in the same post
+    # though, https://github.com/bluesky-social/atproto/discussions/2575 , so if
+    # the post has those, put the original post link at the end of the text
+    # instead, after truncating.
     original_post_embed_name = original_post_text_suffix = None
     include_link = None
     url = as1.get_url(obj) or obj.get('id')
     if url:
       snippet = f'Original post on {util.domain_from_link(url)}'
       original_post_embed_name = snippet
-      original_post_text_suffix = f'[{snippet}]'
-      if has_video:
-        original_post_embed_name = '[Video] ' + original_post_embed_name
-        original_post_text_suffix = '[Video] ' + original_post_text_suffix
-
-      original_post_text_suffix = '\n\n' + original_post_text_suffix
-
-      if images:
-        include_link = INCLUDE_LINK if has_video else INCLUDE_IF_TRUNCATED
-      else:
-        include_link = OMIT_LINK  # it'll go in the external embed, not text
+      original_post_text_suffix = f'\n\n[{snippet}]'
+      include_link = (INCLUDE_IF_TRUNCATED if images or video
+                      else OMIT_LINK)  # link will be in the external embed, not text
 
     # convert text from HTML and truncate
     link_tags = []
@@ -687,7 +717,9 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
         # https://github.com/snarfed/granary/issues/729
         while link := MARKDOWN_LINK_RE.search(content):
           start, end = link.span()
-          if not link['text'].startswith(('@', '#')):
+          # our regexp isn't perfect, so skip links that we can't extract a
+          # clean URL from
+          if util.is_web(link['url']) and not link['text'].startswith(('@', '#')):
             link_tags.append({
               'objectType': 'link',
               'displayName': link['text'],
@@ -713,11 +745,54 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
         full_text = prefix + full_text
         index_offset = len(prefix)
 
-    # truncate. if we're including a text suffix, ie original post link and
-    # maybe [Video] label, link that with a facet
+    # attachments, including quoted posts
+    record_embed = record_record_embed = external_embed = external_record_embed = None
+
+    for att in attachments:
+      if not att.get('objectType') in ('article', 'link', 'note'):
+        continue
+
+      id = att.get('id') or ''
+      att_url = att.get('url') or ''
+      if (id.startswith('at://') or id.startswith(Bluesky.BASE_URL) or
+          att_url.startswith('at://') or att_url.startswith(Bluesky.BASE_URL)):
+        # quoted Bluesky post
+        embed = from_as1(att, **kwargs).get('post') or {}
+        embed['value'] = embed.pop('record', None)
+        record_embed = {
+          '$type': f'app.bsky.embed.record#view',
+          'record': {
+            **embed,
+            '$type': f'app.bsky.embed.record#viewRecord',
+            # override these so that trim_nulls below will remove them
+            'likeCount': None,
+            'replyCount': None,
+            'repostCount': None,
+          },
+        }
+        record_record_embed = {
+          '$type': f'app.bsky.embed.record',
+          'record': from_as1_to_strong_ref(att, client=client),
+        }
+        full_text = QUOTE_RE_SUFFIX.sub('', full_text)
+      else:
+        # external link
+        external_record_embed = _to_external_embed(att)
+        external_embed = {
+          '$type': f'app.bsky.embed.external#view',
+          'external': {
+            **external_record_embed['external'],
+            '$type': f'app.bsky.embed.external#viewExternal',
+            'thumb': util.get_first(att, 'image'),
+          },
+        }
+
+    # truncate text. if we're including a suffix, ie original post link, link
+    # that with a facet
+    is_dm = as1.is_dm(obj, actor=actor)
     text = Bluesky('unused').truncate(
       full_text, original_post_text_suffix, include_link=include_link,
-      punctuation=('', ''), type=type)
+      punctuation=('', ''), type='dm' if is_dm else type)
     truncated = text != full_text
     if truncated:
       text_byte_end = len(text.split(ELLIPSIS, maxsplit=1)[0].encode())
@@ -812,7 +887,7 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
         # can't use \b at beginning/end because # and @ and emoji aren't
         # word-constituent chars
         bound = fr'[\s{string.punctuation.replace("-", "")}]'
-        match = re.search(fr'(^|{bound})({prefix}{name})($|{bound})', text,
+        match = re.search(fr'(^|{bound})({prefix}{re.escape(name)})($|{bound})', text,
                           flags=re.IGNORECASE)
         if not match and tag_type == 'mention' and '@' in name:
           # try without @[server] suffix
@@ -838,73 +913,47 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
         facets.append(facet)
 
     # attachments => embeds for articles/notes
-    record_embed = record_record_embed = external_embed = external_record_embed = None
-
-    if (truncated or has_video) and url:
+    if truncated and url:
       # override attachments with link to original post. (if there are images,
       # we added a link in the text instead, and this won't get used.)
-      attachments = [{
-        'objectType': 'link',
-        'url': url,
-        'displayName': original_post_embed_name,
-      }]
+      external_record_embed = {
+        '$type': f'app.bsky.embed.external',
+        'external': {
+          '$type': f'app.bsky.embed.external#external',
+          'uri': url,
+          'title': original_post_embed_name,
+          'description': '',
+        },
+      }
+      external_embed = {
+        '$type': f'app.bsky.embed.external#view',
+        'external': {
+          **external_record_embed['external'],
+          '$type': f'app.bsky.embed.external#viewExternal',
+          'thumb': (images[0].get('url') or images[0].get('id')) if images else None,
+        },
+      }
 
-    for att in attachments:
-      if not att.get('objectType') in ('article', 'link', 'note'):
-        continue
-
-      id = att.get('id') or ''
-      att_url = att.get('url') or ''
-      if (id.startswith('at://') or id.startswith(Bluesky.BASE_URL) or
-          att_url.startswith('at://') or att_url.startswith(Bluesky.BASE_URL)):
-        # quoted Bluesky post
-        embed = from_as1(att, **kwargs).get('post') or {}
-        embed['value'] = embed.pop('record', None)
-        record_embed = {
-          '$type': f'app.bsky.embed.record#view',
-          'record': {
-            **embed,
-            '$type': f'app.bsky.embed.record#viewRecord',
-            # override these so that trim_nulls below will remove them
-            'likeCount': None,
-            'replyCount': None,
-            'repostCount': None,
-          },
-        }
-        record_record_embed = {
-          '$type': f'app.bsky.embed.record',
-          'record': from_as1_to_strong_ref(att, client=client),
-        }
-        text = QUOTE_RE_SUFFIX.sub('', text)
-      else:
-        # external link
-        external_record_embed = _to_external_embed(att)
-        external_embed = {
-          '$type': f'app.bsky.embed.external#view',
-          'external': {
-            **external_record_embed['external'],
-            '$type': f'app.bsky.embed.external#viewExternal',
-            'thumb': util.get_first(att, 'image'),
-          },
-        }
-
-    if record_embed and (images_embed or external_embed):
+    # populate embeds
+    media_embed = video_embed or images_embed or external_embed
+    if record_embed and ():
       embed = {
         '$type': 'app.bsky.embed.recordWithMedia#view',
         'record': record_embed,
-        'media': images_embed or external_embed,
+        'media': media_embed
       }
     else:
-      embed = record_embed or images_embed or external_embed
+      embed = record_embed or media_embed
 
-    if record_record_embed and (images_record_embed or external_record_embed):
+    media_record_embed = video_record_embed or images_record_embed or external_record_embed
+    if record_record_embed and media_record_embed:
       record_embed = {
         '$type': 'app.bsky.embed.recordWithMedia',
         'record': record_record_embed,
-        'media' : images_record_embed or external_record_embed,
+        'media' : media_record_embed
       }
     else:
-      record_embed = record_record_embed or images_record_embed or external_record_embed
+      record_embed = record_record_embed or media_record_embed
 
     # in reply to
     reply = None
@@ -936,7 +985,7 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
       }
 
     ret = {
-      '$type': 'app.bsky.feed.post',
+      '$type': 'chat.bsky.convo.defs#messageInput' if is_dm else 'app.bsky.feed.post',
       'text': text,
       'createdAt': from_as1_datetime(obj.get('published')),
       'embed': record_embed,
@@ -965,37 +1014,32 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
     ret = trim_nulls(ret, ignore=('alt', 'createdAt', 'cid', 'description',
                                   'text', 'title', 'uri'))
 
-    if not out_type or out_type == 'app.bsky.feed.post':
-      return LEXRPC_BASE._maybe_validate('app.bsky.feed.post', 'record', ret)
+    if out_type in ('app.bsky.feed.defs#feedViewPost',
+                    'app.bsky.feed.defs#postView'):
+        # author
+        author = as1.get_object(obj, 'author')
+        author.setdefault('objectType', 'person')
+        author = from_as1(author, out_type='app.bsky.actor.defs#profileViewBasic', **kwargs)
 
-    # author
-    author = as1.get_object(obj, 'author')
-    author.setdefault('objectType', 'person')
-    author = from_as1(author, out_type='app.bsky.actor.defs#profileViewBasic', **kwargs)
+        ret = trim_nulls({
+          '$type': 'app.bsky.feed.defs#postView',
+          'uri': obj.get('id') or url or '',
+          'cid': '',
+          'record': ret,
+          'author': author,
+          'embed': embed,
+          'replyCount': 0,
+          'repostCount': 0,
+          'likeCount': 0,
+          'indexedAt': from_as1_datetime(None),
+        }, ignore=('author', 'createdAt', 'cid', 'description', 'indexedAt',
+                   'record', 'text', 'title', 'uri'))
 
-    ret = trim_nulls({
-      '$type': 'app.bsky.feed.defs#postView',
-      'uri': obj.get('id') or url or '',
-      'cid': '',
-      'record': ret,
-      'author': author,
-      'embed': embed,
-      'replyCount': 0,
-      'repostCount': 0,
-      'likeCount': 0,
-      'indexedAt': from_as1_datetime(None),
-    }, ignore=('author', 'createdAt', 'cid', 'description', 'indexedAt',
-               'record', 'text', 'title', 'uri'))
-
-    if out_type == 'app.bsky.feed.defs#postView':
-      pass
-    elif out_type == 'app.bsky.feed.defs#feedViewPost':
+    if out_type == 'app.bsky.feed.defs#feedViewPost':
       ret = {
         '$type': out_type,
         'post': ret,
       }
-    else:
-      assert False, "shouldn't happen"
 
   elif type == 'collection':
       ret = {
@@ -1018,14 +1062,14 @@ def from_as1(obj, out_type=None, blobs=None, client=None,
   else:
     raise ValueError(f'AS1 object has unknown objectType {type} verb {verb}')
 
-  nsid = ret.get('$type')
-  type = 'record'
-  if nsid == 'com.atproto.moderation.createReport#input':
-    nsid = 'com.atproto.moderation.createReport'
-    type = 'input'
-
-  if nsid:
-    return LEXRPC_BASE._maybe_validate(nsid, type, ret)
+  if nsid := ret.get('$type'):
+    method = nsid.removesuffix('#input')
+    if method == nsid:
+      type = 'record'
+    else:
+      nsid = method
+      type = 'input'
+    return LEXRPC_TRUNCATE.validate(nsid, type, ret)
 
   return ret
 
@@ -1047,7 +1091,7 @@ def _to_external_embed(obj, description=None):
     'external': {
       '$type': f'app.bsky.embed.external#external',
       'uri': url,
-      'title': obj.get('displayName'),
+      'title': obj.get('displayName') or '',  # required
       'description': description or obj.get('summary') or obj.get('content') or '',
     }
   }
@@ -1176,7 +1220,10 @@ def to_as1(obj, type=None, uri=None, repo_did=None, repo_handle=None,
           'alias': '@unlisted',
         }]
 
-  elif type == 'app.bsky.feed.post':
+  elif type in ('app.bsky.feed.post',
+                'chat.bsky.convo.defs#messageInput',
+                'chat.bsky.convo.defs#messageView',
+                ):
     # TODO: escape HTML chars. difficult because we have to shuffle over facet
     # indices to match.
     text = obj.get('text', '')
@@ -1253,12 +1300,25 @@ def to_as1(obj, type=None, uri=None, repo_did=None, repo_handle=None,
       'sensitive': sensitive,
     }
 
+    if type == 'chat.bsky.convo.defs#messageView':
+      author = obj['sender']['did']
+      if not ret['id']:
+        ret['id'] = f'at://{author}/chat.bsky.convo.defs.messageView/{obj["id"]}'
+      ret.update({
+        'author': author,
+        'published': obj.get('sentAt'),
+        'to': ['?'],  # show that it's a DM even though we don't know the recipient
+      })
+
     # embeds
     embed = obj.get('embed') or {}
     embed_type = embed.get('$type')
     if embed_type == 'app.bsky.embed.images':
       ret['image'] = to_as1(embed, **kwargs)
-    elif embed_type in ('app.bsky.embed.external', 'app.bsky.embed.record'):
+    elif embed_type in ('app.bsky.embed.external',
+                        'app.bsky.embed.record',
+                        'app.bsky.embed.video',
+                        ):
       ret['attachments'] = [to_as1(embed, **kwargs)]
     elif embed_type == 'app.bsky.embed.recordWithMedia':
       ret['attachments'] = [to_as1(embed, **kwargs)]
@@ -1266,7 +1326,7 @@ def to_as1(obj, type=None, uri=None, repo_did=None, repo_handle=None,
       # need to make it return both the quote post attachment and the image.
       media = embed.get('media')
       media_type = media.get('$type')
-      if media_type == 'app.bsky.embed.external':
+      if media_type in ('app.bsky.embed.external', 'app.bsky.embed.video'):
         ret['attachments'].append(to_as1(media, **kwargs))
       elif media_type == 'app.bsky.embed.images':
         ret['image'] = to_as1(media, **kwargs)
@@ -1293,14 +1353,16 @@ def to_as1(obj, type=None, uri=None, repo_did=None, repo_handle=None,
         ret.setdefault('image', []).extend(to_as1(embed, **kwargs))
 
       elif embed_type in ('app.bsky.embed.external#view',
-                          'app.bsky.embed.record#view'):
+                          'app.bsky.embed.record#view',
+                          'app.bsky.embed.video#view',
+                          ):
         ret['attachments'] = [to_as1(embed, **kwargs)]
 
       elif embed_type == 'app.bsky.embed.recordWithMedia#view':
         ret['attachments'] = [to_as1(embed.get('record', {}).get('record'), **kwargs)]
         media = embed.get('media')
         media_type = media.get('$type')
-        if media_type == 'app.bsky.embed.external#view':
+        if media_type in ('app.bsky.embed.external#view', 'app.bsky.embed.video#view'):
           ret.setdefault('attachments', []).append(to_as1(media, **kwargs))
         elif media_type == 'app.bsky.embed.images#view':
           ret.setdefault('image', []).extend(to_as1(media, **kwargs))
@@ -1308,22 +1370,43 @@ def to_as1(obj, type=None, uri=None, repo_did=None, repo_handle=None,
           assert False, f'Unknown embed media type: {media_type}'
 
   elif type == 'app.bsky.embed.images':
+    ret = []
     if repo_did and pds:
-      ret = []
       for img in obj.get('images', []):
         image = img.get('image')
         if image:
           url = blob_to_url(blob=image, repo_did=repo_did, pds=pds)
           ret.append({'url': url, 'displayName': img['alt']}
                      if img.get('alt') else url)
-    else:
-      ret = []
+
+  elif type == 'app.bsky.embed.video':
+    ret = {}
+    if repo_did and pds:
+      if vid := obj['video']:
+        url = blob_to_url(blob=vid, repo_did=repo_did, pds=pds)
+        ret = {
+          'objectType': 'video',
+          'stream': {
+            'url': url,
+            'mimeType': vid.get('mimeType'),
+          },
+          'displayName': obj.get('alt'),
+        }
 
   elif type == 'app.bsky.embed.images#view':
     ret = [{
       'url': img.get('fullsize'),
       'displayName': img.get('alt'),
     } for img in obj.get('images', [])]
+
+  elif type == 'app.bsky.embed.video#view':
+    ret = {}
+    if repo_did and pds:
+      ret = {
+        'objectType': 'video',
+        'stream': {'url': blob_to_url(blob=obj, repo_did=repo_did, pds=pds)},
+        'displayName': obj.get('alt'),
+      }
 
   elif type in ('app.bsky.embed.external', 'app.bsky.embed.external#view'):
     ret = to_as1(obj.get('external'), type='app.bsky.embed.external#viewExternal',
@@ -1397,7 +1480,7 @@ def to_as1(obj, type=None, uri=None, repo_did=None, repo_handle=None,
 
   elif type == 'com.atproto.moderation.createReport#input':
     content = obj['reasonType'].removeprefix('com.atproto.moderation.defs#reason')
-    if reason := obj['reason']:
+    if reason := obj.get('reason'):
       content += f': {reason}'
 
     ret = {
@@ -1513,6 +1596,9 @@ def blob_to_url(*, blob, repo_did, pds=DEFAULT_PDS):
   Supports both new and old style blobs:
   https://atproto.com/specs/data-model#blob-type
 
+  Supports ``ref`` values as raw bytes, base-32 encoded strings, and
+  DAG-JSON mappings with inner ``$link`` values.
+
   The resulting URL is a ``com.atproto.sync.getBlob`` XRPC call to the PDS.
 
   For blobs on the official ``bsky.social`` PDS, we could consider using their CDN
@@ -1523,7 +1609,7 @@ def blob_to_url(*, blob, repo_did, pds=DEFAULT_PDS):
   not sure how to generate signatures for it yet.
 
   Args:
-    blob (dict)
+    blob (dict): https://atproto.com/specs/data-model#blob-type
     repo_did (str): DID of the repo that owns this blob
     pds (str): base URL of the PDS that serves this repo. Defaults to
       :const:`DEFAULT_PDS`
@@ -1536,10 +1622,35 @@ def blob_to_url(*, blob, repo_did, pds=DEFAULT_PDS):
 
   assert repo_did and pds
 
-  cid = blob.get('ref', {}).get('$link') or blob.get('cid')
-  if cid:
+  if cid := blob_cid(blob):
     path = f'/xrpc/com.atproto.sync.getBlob?did={repo_did}&cid={cid}'
     return urllib.parse.urljoin(pds, path)
+
+
+def blob_cid(blob):
+  """Returns a blob's base32-encoded CID.
+
+  Supports both new and old style blobs:
+  https://atproto.com/specs/data-model#blob-type
+
+  Supports ``ref`` values as raw bytes, base-32 encoded strings, and
+  DAG-JSON mappings with inner ``$link`` values.
+
+  Args:
+    blob (dict): https://atproto.com/specs/data-model#blob-type
+
+  Returns:
+    str: this blob's CID, base32-encoded
+  """
+  assert blob
+
+  if ref := blob.get('ref'):
+    return (ref if isinstance(ref, str)
+            else CID.decode(ref).encode('base32') if isinstance(ref, bytes)
+            else ref.encode('base32') if isinstance(ref, CID)
+            else ref.get('$link'))
+  else:
+    return blob.get('cid')
 
 
 class Bluesky(Source):
@@ -1585,7 +1696,8 @@ class Bluesky(Source):
 
     headers = {'User-Agent': util.user_agent}
     self._client = Client(access_token=access_token, refresh_token=refresh_token,
-                          headers=headers, session_callback=session_callback)
+                          headers=headers, session_callback=session_callback,
+                          validate=True)
 
   @property
   def client(self):
@@ -1714,6 +1826,9 @@ class Bluesky(Source):
         continue
 
       activity = self.postprocess_activity(self._post_to_activity(post))
+      if not activity:
+        continue
+
       activities.append(activity)
       obj = activity['object']
       id = obj.get('id')
@@ -1741,8 +1856,16 @@ class Bluesky(Source):
         # Replies
         reply_count = bs_post.get('replyCount')
         if fetch_replies and reply_count and reply_count != cache.get('ABR ' + id):
-          replies = trim_nulls([to_as1(r) for r in
-                                self._get_replies(bs_post.get('uri'))])
+          replies = []
+          for r in self._get_replies(bs_post.get('uri')):
+            try:
+              reply = to_as1(r)
+            except ValueError as e:
+              logger.warning(f'skipping a reply: {e}')
+              continue
+            if reply:
+              replies.append(reply)
+
           for r in replies:
             r['id'] = self.tag_uri(r['id'])
           obj['replies'] = {
@@ -1795,12 +1918,19 @@ class Bluesky(Source):
   def _post_to_activity(self, post):
     """Converts a post to an activity.
 
+    Returns ``{}`` if ``post`` has an unknown or unsupported type.
+
     Args:
       post: Bluesky post app.bluesky.feed.defs#feedViewPost
 
     Returns: AS1 activity
     """
-    obj = to_as1(post, type='app.bsky.feed.defs#feedViewPost')
+    try:
+      obj = to_as1(post, type='app.bsky.feed.defs#feedViewPost')
+    except ValueError as e:
+      logger.warning(e)
+      return {}
+
     if obj.get('objectType') == 'activity':
       return obj
     return {
@@ -1860,7 +1990,7 @@ class Bluesky(Source):
       ret = self._recurse_replies(thread)
     return sorted(ret, key = lambda thread: thread.get('post', {}).get('record', {}).get('createdAt') or '')
 
-  # TODO this ought to take a depth limit.
+  # TODO this ought to take a depth limit. hellthread, anyone?
   def _recurse_replies(self, thread):
     """
     Recurses through a Bluesky app.bsky.feed.defs#threadViewPost
@@ -1913,7 +2043,13 @@ class Bluesky(Source):
     type = obj.get('objectType')
     verb = obj.get('verb')
 
-    base_obj = self.base_object(obj)
+    try:
+      base_obj = self.base_object(obj)
+    except ValueError as e:
+      e_str = str(e)
+      return creation_result(abort=True, error_plain=e_str,
+                             error_html=util.linkify(e_str, pretty=True))
+
     base_id = base_obj.get('id')
     base_url = base_obj.get('url')
 
@@ -2005,11 +2141,6 @@ class Bluesky(Source):
         data['in_reply_to_id'] = base_id
       else:
         preview_description += f"<span class=\"verb\">{self.TYPE_LABELS['post']}</span>:"
-
-      videos = util.dedupe_urls(
-        [obj] + [a for a in atts if a.get('objectType') == 'video'], key='stream')
-      if videos:
-        logger.warning(f'Found {len(videos)} videos, but Bluesky doesn\'t support video yet.')
 
       if len(images) > MAX_IMAGES:
         images = images[:MAX_IMAGES]
@@ -2123,10 +2254,12 @@ class Bluesky(Source):
 
   def truncate(self, *args, type=None, **kwargs):
     """Thin wrapper around :meth:`Source.truncate` that sets default kwargs."""
-    if type in as1.ACTOR_TYPES:
-      length = LEXRPC_BASE.defs['app.bsky.actor.profile']['record']['properties']['description']['maxGraphemes']
+    if type == 'dm':
+      length = LEXRPC_TRUNCATE.defs['chat.bsky.convo.defs#messageInput']['properties']['text']['maxGraphemes']
+    elif type in as1.ACTOR_TYPES:
+      length = LEXRPC_TRUNCATE.defs['app.bsky.actor.profile']['record']['properties']['description']['maxGraphemes']
     elif type in POST_TYPES:
-      length = LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text']['maxGraphemes']
+      length = LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text']['maxGraphemes']
     else:
       assert False, f'unexpected type {type}'
 

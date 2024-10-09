@@ -27,6 +27,7 @@ RSVP_VERB_TO_COLLECTION = collections.OrderedDict((  # in priority order
 VERBS_WITH_OBJECT = frozenset((
   'accept',
   'block',
+  'flag',
   'follow',
   'like',
   'react',
@@ -227,8 +228,11 @@ def is_public(obj, unlisted=True):
   update Bridgy's code.
 
   Args:
-    obj (dict): AS2 activity or object
+    obj (dict): AS1 activity or object
     unlisted (bool): whether `@unlisted` counts as public or not
+
+  Returns:
+    bool:
   """
   if obj is None:
     return None
@@ -249,6 +253,89 @@ def is_public(obj, unlisted=True):
     return False
 
   return True
+
+
+def recipient_if_dm(obj, actor=None):
+  """If ``obj`` is a DM, returns the recipient actor's id.
+
+  DMs are ``note``s addressed to a single recipient, ie ``to`` has one value and
+  ``cc``, ``bcc``, and ``bto`` have none.
+
+  If ``obj`` isn't a DM, returns None.
+
+  Those fields are based on the Audience Targeting extension:
+  http://activitystrea.ms/specs/json/targeting/1.0/
+
+  Args:
+    obj (dict): AS1 activity or object
+    actor (dict): optional AS1 actor who sent this object. Its followers
+      collection is used to identify followers-only posts.
+
+  Returns:
+    bool:
+  """
+  if not obj or is_public(obj):
+    return None
+
+  if object_type(obj) == 'post':
+    obj = get_object(obj)
+
+  if not obj or object_type(obj) not in (None, 'note'):
+    return None
+
+  tos = util.get_list(obj, 'to')
+  others = (util.get_list(obj, 'cc')
+            + util.get_list(obj, 'bto')
+            + util.get_list(obj, 'bcc'))
+  if not (len(tos) == 1 and len(others) == 0):
+    return None
+
+  follow_collections = []
+  for a in actor, get_object(obj, 'author'):
+    if a:
+      follow_collections.extend([a.get('followers'), a.get('following')])
+
+  to = tos.pop()
+  if isinstance(to, dict):
+    to = to.get('id') or ''
+
+  to_lower = to.lower()
+  if to and not is_audience(to) and to not in follow_collections:
+    return to
+
+
+def is_dm(obj, actor=None):
+  """Returns True if the object is a DM, ie addressed to a single recipient.
+
+  See :func:`recipient_if_dm` for details.
+  """
+  return bool(recipient_if_dm(obj, actor=actor))
+
+
+def is_audience(val):
+  """Returns True if val is a "special" AS1 or AS2 audience, eg "public."
+
+
+  See the AS1 Audience Targeting extension and AS2 spec:
+  * http://activitystrea.ms/specs/json/targeting/1.0/
+  * https://www.w3.org/TR/activitystreams-vocabulary/#dfn-audience
+  """
+  if not val or not isinstance(val, str):
+    return False
+
+  val = val.lower()
+  return (# https://activitystrea.ms/specs/json/targeting/1.0/
+          val in ('public', 'unlisted', 'private')
+          or val.startswith('https://www.w3.org/')
+          or val.startswith('https://w3.org/')
+          or val.startswith('@')  # AS1 audience targeting alias, eg @public, @unlisted
+          or val.startswith('as:')
+          # as2 public constant is https://www.w3.org/ns/activitystreams#Public
+          or val.endswith('#public')
+          # non-standared heuristic for Mastodon and similar followers/following
+          # collections
+          or val.endswith('/followers')
+          or val.endswith('/following'))
 
 
 def add_rsvps_to_event(event, rsvps):

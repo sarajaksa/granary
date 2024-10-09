@@ -58,9 +58,6 @@ OBJECT_TYPE_TO_TYPE = {
   'collection': 'Collection',
   'comment': 'Note',
   'event': 'Event',
-  # not in AS1 spec
-  # https://docs.joinmastodon.org/spec/activitypub/#Flag
-  'flag': 'Flag',
   'group': 'Group',
   # not in AS2 spec; needed for correct round trip conversion
   'hashtag': 'Tag',
@@ -81,6 +78,8 @@ TYPE_TO_OBJECT_TYPE = _invert(OBJECT_TYPE_TO_TYPE)
 TYPE_TO_OBJECT_TYPE['Note'] = 'note'  # disambiguate
 ACTOR_TYPES = {as2_type for as1_type, as2_type in OBJECT_TYPE_TO_TYPE.items()
                if as1_type in as1.ACTOR_TYPES}
+# https://www.w3.org/TR/activitystreams-vocabulary/#object-types
+URL_TYPES = ['Article', 'Audio', 'Image', 'Mention', 'Video']
 
 VERB_TO_TYPE = {
   'accept': 'Accept',
@@ -88,6 +87,9 @@ VERB_TO_TYPE = {
   'block': 'Block',
   'delete': 'Delete',
   'favorite': 'Like',
+  # not in AS1 spec
+  # https://docs.joinmastodon.org/spec/activitypub/#Flag
+  'flag': 'Flag',
   'follow': 'Follow',
   'invite': 'Invite',
   'like': 'Like',
@@ -122,6 +124,17 @@ MASTODON_ALLOWED_IMAGE_TYPES = ('image/jpeg', 'image/png', 'image/gif', 'image/w
 # https://codeberg.org/fediverse/fep/src/branch/main/fep/e232/fep-e232.md#user-content-examples
 QUOTE_RE_SUFFIX = re.compile(r'\s+RE: <?[^\s]+>?\s?$')
 
+# https://socialhub.activitypub.rocks/t/fep-d556-server-level-actor-discovery-using-webfinger/3861/3
+# https://codeberg.org/fediverse/fep/src/branch/main/fep/d556/fep-d556.md
+SERVER_ACTOR_PREFIXES = (
+  '/',
+  '/accounts/peertube',
+  '/actor',
+  '/i/actor',
+  '/internal/fetch',
+  '/wp-json/activitypub/1.0/application',
+)
+
 
 def get_urls(obj, key='url'):
   """Returns ``link['href']`` or ``link``, for each ``link`` in ``obj[key]``."""
@@ -143,7 +156,10 @@ def from_as1(obj, type=None, context=CONTEXT, top_level=True):
   if not obj:
     return {}
   elif isinstance(obj, str):
-    return obj
+    if type in URL_TYPES:
+      obj = {'type': type, 'url': obj}
+    else:
+      return obj
   elif not isinstance(obj, dict):
     raise ValueError(f'Expected dict, got {obj!r}')
 
@@ -232,7 +248,6 @@ def from_as1(obj, type=None, context=CONTEXT, top_level=True):
 
   tags.extend(quotes)
 
-
   # Mastodon profile metadata fields into attachments
   # https://docs.joinmastodon.org/spec/activitypub/#PropertyValue
   # https://github.com/snarfed/bridgy-fed/issues/323
@@ -257,6 +272,15 @@ def from_as1(obj, type=None, context=CONTEXT, top_level=True):
           'name': name or 'Link',
           'value': f'<a rel="me" href="{url}"><span class="invisible">{scheme}</span>{visible}</a>',
         }
+
+        pv_context = {
+          'schema': 'http://schema.org#',
+          'PropertyValue': 'schema:PropertyValue'
+        }
+        context = util.get_list(obj, '@context')
+        if context and pv_context not in context:
+          obj['@context'] = context + [pv_context]
+
     attachments.extend(links.values())
 
   # urls
@@ -456,10 +480,8 @@ def to_as1(obj, use_type=True):
           media_type = tag.get('mediaType') or ''
           href = tag.get('href')
           if media_type.split('/')[0] == type.lower():
-            obj['stream'] = {
-              'mimeType': media_type,
-              'url': href,
-            }
+            obj['stream'] = {'url': href}
+            obj['mimeType'] = media_type
             break
 
   # ActivityPub/Mastodon uses icon for profile picture, image for header.
@@ -506,8 +528,8 @@ def to_as1(obj, use_type=True):
                     if isinstance(inner_inner_obj, dict) else inner_inner_obj)
 
   # audience, public or unlisted or neither
-  to = sorted(util.get_list(obj, 'to'))
-  cc = sorted(util.get_list(obj, 'cc'))
+  to = sorted(as1.get_ids(obj, 'to'))
+  cc = sorted(as1.get_ids(obj, 'cc'))
   as1_to = [{'id': val} for val in to]
   as1_cc = [{'id': val} for val in cc]
   if PUBLICS.intersection(to):
@@ -522,15 +544,19 @@ def to_as1(obj, use_type=True):
   if not displayName and obj.get('objectType') in as1.ACTOR_TYPES:
     displayName = address(obj)
 
-  # extract quoted posts from tags
-  # https://codeberg.org/fediverse/fep/src/branch/main/fep/e232/fep-e232.md
+  # attachments, tags
   attachments = all_to_as1('attachment')
   tags_as1 = []
   quote_urls = []
   for tag in util.pop_list(obj, 'tag'):
-    if (tag.get('type') == 'Link'  # TODO: Link subtypes?
-        and tag.get('mediaType') in (CONTENT_TYPE_LD_PROFILE, CONTENT_TYPE)
-        and tag.get('href')):
+    if isinstance(tag, str):
+      tags_as1.append(tag)
+
+    elif (tag.get('type') == 'Link'  # TODO: Link subtypes?
+          and tag.get('mediaType') in (CONTENT_TYPE_LD_PROFILE, CONTENT_TYPE)
+          and tag.get('href')):
+      # quoted post
+      # https://codeberg.org/fediverse/fep/src/branch/main/fep/e232/fep-e232.md
       quote = to_as1(tag)
       url = quote.pop('href')
       quote_urls.append(url)
@@ -551,9 +577,15 @@ def to_as1(obj, use_type=True):
       obj['content'] = re.sub(
         fr'(\s|(<br>)+)?RE: (</span>)?(<a href="{url}">)?<?{url}>?(</a>)?\s?$', '',
         obj['content'])
+      continue
 
     else:
-      tags_as1.append(to_as1(tag))
+      # other tag
+      tags_as1.append(to_as1({
+        'url': tag.pop('href', None),
+        'name': tag.pop('tag', None),  # rare
+        **tag,
+      }))
 
   # check quote post fields on the top level object
   # https://misskey-hub.net/ns#_misskey_quote
@@ -607,10 +639,6 @@ def to_as1(obj, use_type=True):
       'duration': duration or None,
     })
     obj['stream'].setdefault('url', obj.pop('url', None))
-
-  # mention
-  elif type == 'Mention':
-    obj['url'] = obj.pop('href', None)
 
   # object author
   attrib = util.pop_list(obj, 'attributedTo')
@@ -720,3 +748,30 @@ def link_tags(obj):
     del tag['length']
 
   obj['content'] = linked + orig[last_end:]
+
+
+def is_server_actor(actor):
+  """Returns True if this is the instance's server actor, False otherwise.
+
+  Server actors are non-user actors used for fetching remote objects, sending
+  ``Flag`` activities, etc. Background:
+  * https://seb.jambor.dev/posts/understanding-activitypub-part-4-threads/#the-instance-actor
+  * https://codeberg.org/fediverse/fep/src/branch/main/fep/d556/fep-d556.md
+
+  Right now, this just uses a well-known set of paths as a heuristic.
+
+  TODO: actually do a WebFinger lookup of the root path, eg
+  ``webfinger?resource=https://example.com/``, and use FEP-d556 to determine the
+  server actor.
+
+  Args:
+    actor (dict): AS2 actor
+
+  Returns:
+    bool:
+  """
+  id = actor.get('id')
+  if not id:
+    return False
+
+  return urlparse(id).path in SERVER_ACTOR_PREFIXES

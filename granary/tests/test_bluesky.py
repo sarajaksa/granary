@@ -7,6 +7,7 @@ from io import BytesIO
 from unittest import skip
 from unittest.mock import ANY, patch
 
+from multiformats import CID
 from oauth_dropins.webutil import testutil, util
 from oauth_dropins.webutil.testutil import NOW, requests_response
 from oauth_dropins.webutil.util import HTTP_TIMEOUT, trim_nulls
@@ -15,12 +16,13 @@ import requests
 from ..bluesky import (
   AT_URI_PATTERN,
   at_uri_to_web_url,
+  blob_cid,
   blob_to_url,
   Bluesky,
   did_web_to_url,
   from_as1,
   from_as1_to_strong_ref,
-  LEXRPC_BASE,
+  LEXRPC_TRUNCATE,
   MAX_IMAGES,
   NO_AUTHENTICATED_LABEL,
   to_as1,
@@ -49,11 +51,11 @@ ACTOR_PROFILE_VIEW_BSKY = {
 }
 NEW_BLOB = {  # new blob format: https://atproto.com/specs/data-model#blob-type
   '$type': 'blob',
-  'ref': {'$link': 'bafkreim'},
+  'ref': {'$link': 'bafkreicqpqncshdd27sgztqgzocd3zhhqnnsv6slvzhs5uz6f57cq6lmtq'},
   'mimeType': 'image/jpeg',
   'size': 154296,
 }
-NEW_BLOB_URL = 'https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did:plc:foo&cid=bafkreim'
+NEW_BLOB_URL = 'https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did:plc:foo&cid=bafkreicqpqncshdd27sgztqgzocd3zhhqnnsv6slvzhs5uz6f57cq6lmtq'
 OLD_BLOB = {  # old blob format: https://atproto.com/specs/data-model#blob-type
   'cid': 'bafyjrot',
   'mimeType': 'image/jpeg',
@@ -71,13 +73,13 @@ ACTOR_PROFILE_BSKY = {
 
 POST_AS = {
   'objectType': 'activity',
-  'id': 'at://did:alice/app.bsky.feed.post/tid',
+  'id': 'at://did:al:ice/app.bsky.feed.post/tid',
   'verb': 'post',
   'actor': ACTOR_AS,
   'object': {
     'objectType': 'note',
-    'id': 'at://did:alice/app.bsky.feed.post/tid',
-    'url': 'https://bsky.app/profile/did:alice/post/tid',
+    'id': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'url': 'https://bsky.app/profile/did:al:ice/post/tid',
     'published': '2007-07-07T03:04:05.000Z',
     'content': 'My original post',
   }
@@ -86,12 +88,12 @@ POST_BSKY = {
   '$type': 'app.bsky.feed.post',
   'text': 'My original post',
   'fooOriginalText': 'My original post',
-  'fooOriginalUrl': 'https://bsky.app/profile/did:alice/post/tid',
+  'fooOriginalUrl': 'https://bsky.app/profile/did:al:ice/post/tid',
   'createdAt': '2007-07-07T03:04:05.000Z',
 }
 POST_VIEW_BSKY = {
   '$type': 'app.bsky.feed.defs#postView',
-  'uri': 'at://did:alice/app.bsky.feed.post/tid',
+  'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
   'cid': '',
   'record': {
     '$type': 'app.bsky.feed.post',
@@ -260,7 +262,7 @@ POST_BSKY_EMBED = {
 POST_VIEW_BSKY_EMBED = copy.deepcopy(POST_VIEW_BSKY)
 POST_VIEW_BSKY_EMBED['record'].update({
   'embed': POST_BSKY_EMBED['embed'],
-  'fooOriginalUrl': 'https://bsky.app/profile/did:alice/post/tid',
+  'fooOriginalUrl': 'https://bsky.app/profile/did:al:ice/post/tid',
 })
 POST_VIEW_BSKY_EMBED['embed'] = {
   '$type': 'app.bsky.embed.external#view',
@@ -298,6 +300,38 @@ POST_VIEW_BSKY_IMAGES['embed'] = {
   }],
 }
 
+POST_AS_VIDEO = copy.deepcopy(POST_AS)
+POST_AS_VIDEO['object']['attachments'] = [{
+  'objectType': 'video',
+  'displayName': 'my alt text',
+  'stream': {
+    'url': NEW_BLOB_URL,
+    'mimeType': 'video/mp4',
+    # 'duration': 123,
+    # 'size': 4567,
+  }
+}]
+
+EMBED_VIDEO = {
+  '$type': 'app.bsky.embed.video',
+  'video': {
+    **NEW_BLOB,
+    'mimeType': 'video/mp4',
+  },
+  'alt': 'my alt text',
+}
+POST_BSKY_VIDEO = copy.deepcopy(POST_BSKY)
+POST_BSKY_VIDEO['embed'] = EMBED_VIDEO
+
+POST_VIEW_BSKY_VIDEO = copy.deepcopy(POST_VIEW_BSKY)
+POST_VIEW_BSKY_VIDEO['record']['embed'] = EMBED_VIDEO
+POST_VIEW_BSKY_VIDEO['embed'] = {
+  '$type': 'app.bsky.embed.video#view',
+  'cid': NEW_BLOB['ref']['$link'],
+  'playlist': '?',
+  'alt': 'my alt text',
+}
+
 REPLY_AS = {
   'objectType': 'activity',
   'verb': 'post',
@@ -305,11 +339,11 @@ REPLY_AS = {
     'objectType': 'comment',
     'published': '2008-08-08T03:04:05.000Z',
     'content': 'I hereby reply to this',
-    'id': 'at://did/app.bsky.feed.post/tid',
-    'url': 'https://bsky.app/profile/did/post/tid',
+    'id': 'at://did:dy:d/app.bsky.feed.post/tid',
+    'url': 'https://bsky.app/profile/did:dy:d/post/tid',
     'inReplyTo': [{
-      'id': 'at://did:alice/app.bsky.feed.post/parent-tid',
-      'url': 'https://bsky.app/profile/did:alice/post/parent-tid',
+      'id': 'at://did:al:ice/app.bsky.feed.post/parent-tid',
+      'url': 'https://bsky.app/profile/did:al:ice/post/parent-tid',
     }],
   },
 }
@@ -317,23 +351,26 @@ REPLY_BSKY = {
   '$type': 'app.bsky.feed.post',
   'text': 'I hereby reply to this',
   'fooOriginalText': 'I hereby reply to this',
-  'fooOriginalUrl': 'https://bsky.app/profile/did/post/tid',
+  'fooOriginalUrl': 'https://bsky.app/profile/did:dy:d/post/tid',
   'createdAt': '2008-08-08T03:04:05.000Z',
   'reply': {
     '$type': 'app.bsky.feed.post#replyRef',
     'root': {
-      'uri': 'at://did:alice/app.bsky.feed.post/parent-tid',
-      'cid': '',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/parent-tid',
+      'cid': 'my+root+syd',
     },
     'parent': {
-      'uri': 'at://did:alice/app.bsky.feed.post/parent-tid',
-      'cid': '',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/parent-tid',
+      'cid': 'my+parent+syd',
     },
   },
 }
+REPLY_BSKY_NO_CIDS = copy.deepcopy(REPLY_BSKY)
+REPLY_BSKY_NO_CIDS['reply']['parent']['cid'] = \
+  REPLY_BSKY_NO_CIDS['reply']['root']['cid'] = ''
 REPLY_POST_VIEW_BSKY = copy.deepcopy(POST_VIEW_BSKY)
 REPLY_POST_VIEW_BSKY.update({
-  'uri': 'at://did/app.bsky.feed.post/tid',
+  'uri': 'at://did:dy:d/app.bsky.feed.post/tid',
   'record': REPLY_BSKY,
 })
 
@@ -344,7 +381,7 @@ REPLY_TO_WEBSITE_AS = copy.deepcopy(REPLY_AS)
 REPLY_TO_WEBSITE_AS['object']['inReplyTo'] = [
   {'url': 'http://example.com/post'},
   {'url': 'https://mastodon.social/@alice/post'},
-  {'url': 'https://bsky.app/profile/did:alice/post/parent-tid'},
+  {'url': 'https://bsky.app/profile/did:al:ice/post/parent-tid'},
 ]
 
 REPOST_AS = {
@@ -369,11 +406,13 @@ REPOST_PROFILE_AS['actor'].update({
 REPOST_BSKY = {
   '$type': 'app.bsky.feed.repost',
   'subject': {
-    'uri': 'at://did:alice/app.bsky.feed.post/tid',
-    'cid': '',
+    'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'cid': 'sydddddd',
   },
   'createdAt': '2022-01-02T03:04:05.000Z',
 }
+REPOST_BSKY_NO_CIDS = copy.deepcopy(REPOST_BSKY)
+REPOST_BSKY_NO_CIDS['subject']['cid'] = ''
 REPOST_BSKY_REASON = {
   '$type': 'app.bsky.feed.defs#reasonRepost',
   'by': {
@@ -394,13 +433,13 @@ REPOST_BSKY_FEED_VIEW_POST['post']['author']['fooOriginalUrl'] = \
   'https://bsky.app/profile/alice.com'
 
 THREAD_REPLY_AS = copy.deepcopy(REPLY_AS['object'])
-THREAD_REPLY_AS['id'] = 'tag:bsky.app:at://did/app.bsky.feed.post/tid'
+THREAD_REPLY_AS['id'] = 'tag:bsky.app:at://did:dy:d/app.bsky.feed.post/tid'
 THREAD_REPLY2_AS = copy.deepcopy(REPLY_AS['object'])
-THREAD_REPLY2_AS['id'] = 'tag:bsky.app:at://did:alice/app.bsky.feed.post/tid2'
-THREAD_REPLY2_AS['url'] = 'https://bsky.app/profile/did:alice/post/tid2'
+THREAD_REPLY2_AS['id'] = 'tag:bsky.app:at://did:al:ice/app.bsky.feed.post/tid2'
+THREAD_REPLY2_AS['url'] = 'https://bsky.app/profile/did:al:ice/post/tid2'
 THREAD_REPLY2_AS['inReplyTo'] = [{
-  'id': 'at://did:alice/app.bsky.feed.post/tid',
-  'url': 'https://bsky.app/profile/did:alice/post/tid'
+  'id': 'at://did:al:ice/app.bsky.feed.post/tid',
+  'url': 'https://bsky.app/profile/did:al:ice/post/tid'
 }]
 THREAD_AS = copy.deepcopy(POST_AS)
 THREAD_AS['object']['replies'] = {'items': [THREAD_REPLY_AS, THREAD_REPLY2_AS]}
@@ -431,20 +470,20 @@ THREAD_BSKY = {
   }],
 }
 THREAD_BSKY['replies'][0]['replies'][0]['post'].update({
-  'uri': 'at://did:alice/app.bsky.feed.post/tid2'
+  'uri': 'at://did:al:ice/app.bsky.feed.post/tid2'
 })
 THREAD_BSKY['replies'][0]['replies'][0]['post']['record']['reply'].update({
   'parent': {
     '$type': 'com.atproto.repo.strongRef',
-    'uri': 'at://did:alice/app.bsky.feed.post/tid',
-    'cid': ''
+    'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'cid': 'sydddddd',
   }
 })
 
 BLOB = {
   '$type': 'blob',
-  'ref': 'a CID',
-  'mimeType': 'foo/bar',
+  'ref': 'sydddddd',
+  'mimeType': 'image/png',
   'size': 13,
 }
 
@@ -459,14 +498,14 @@ LIKE_AS = {
   'objectType': 'activity',
   'verb': 'like',
   'id': 'at://alice.com/app.bsky.feed.like/123',
-  'url': 'https://bsky.app/profile/did:alice/post/tid#liked_by_alice.com',
-  'object': 'at://did:alice/app.bsky.feed.post/tid',
+  'url': 'https://bsky.app/profile/did:al:ice/post/tid#liked_by_alice.com',
+  'object': 'at://did:al:ice/app.bsky.feed.post/tid',
 }
 LIKE_BSKY = {
   '$type': 'app.bsky.feed.like',
   'subject': {
-    'uri': 'at://did:alice/app.bsky.feed.post/tid',
-    'cid': '',
+    'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'cid': 'sydddddd',
   },
   'createdAt': '2022-01-02T03:04:05.000Z',
 }
@@ -480,7 +519,7 @@ GET_LIKES_LIKE_BSKY = {
 POST_AUTHOR_PROFILE_WITH_LIKES_AS = copy.deepcopy(POST_AUTHOR_PROFILE_AS)
 POST_AUTHOR_PROFILE_WITH_LIKES_AS['object']['tags'] = [{
   'author': copy.deepcopy(ACTOR_AS),
-  'id': 'tag:bsky.app:at://did:alice/app.bsky.feed.post/tid_liked_by_did:web:alice.com',
+  'id': 'tag:bsky.app:at://did:al:ice/app.bsky.feed.post/tid_liked_by_did:web:alice.com',
   'objectType': 'activity',
   'verb': 'like',
   'url': 'https://bsky.app/profile/alice.com/post/tid#liked_by_did:web:alice.com',
@@ -496,7 +535,7 @@ POST_AUTHOR_PROFILE_WITH_LIKES_AS['object']['tags'][0]['author'].update({
 POST_AUTHOR_PROFILE_WITH_REPOSTS_AS = copy.deepcopy(POST_AUTHOR_PROFILE_AS)
 POST_AUTHOR_PROFILE_WITH_REPOSTS_AS['object']['tags'] = [{
   'author': copy.deepcopy(ACTOR_AS),
-  'id': 'tag:bsky.app:at://did:alice/app.bsky.feed.post/tid_reposted_by_did:web:alice.com',
+  'id': 'tag:bsky.app:at://did:al:ice/app.bsky.feed.post/tid_reposted_by_did:web:alice.com',
   'objectType': 'activity',
   'verb': 'share',
   'url': 'https://bsky.app/profile/alice.com/post/tid#reposted_by_did:web:alice.com',
@@ -512,13 +551,25 @@ POST_AUTHOR_PROFILE_WITH_REPOSTS_AS['object']['tags'][0]['author'].update({
 FOLLOW_AS = {
   'objectType': 'activity',
   'verb': 'follow',
-  'actor': 'did:alice',
-  'object': 'did:bob',
+  'actor': 'did:al:ice',
+  'object': 'did:bo:b',
 }
 FOLLOW_BSKY = {
   '$type': 'app.bsky.graph.follow',
-  'subject': 'did:bob',
+  'subject': 'did:bo:b',
   'createdAt': '2022-01-02T03:04:05.000Z'
+}
+
+STARTER_PACK_EMBED = {
+  '$type': 'app.bsky.embed.record#view',
+  'record': {
+    '$type': 'app.bsky.graph.defs#starterPackViewBasic',
+    'uri': 'at://did:th:em/app.bsky.starTer/tid',
+    'cid': 'other+syd',
+    'record': {},
+    'creator': POST_AUTHOR_BSKY['author'],
+    'indexedAt': '2022-01-02T03:04:05.000Z',
+  },
 }
 
 
@@ -526,7 +577,7 @@ class BlueskyTest(testutil.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.bs = Bluesky(handle='handull', did='did:dyd', access_token='towkin')
+    self.bs = Bluesky(handle='handull', did='did:dy:d', access_token='towkin')
     util.now = lambda **kwargs: testutil.NOW
 
   def assert_equals(self, expected, actual, **kwargs):
@@ -555,6 +606,11 @@ class BlueskyTest(testutil.TestCase):
         ('at://x / y/z', False),
         (' at://x/y/z ', False),
         ('at://did:plc:foo/a.b/123', True),
+        # TODO: allow this? eg at://did:bo:b/chat.bsky.convo.defs#messageView/xyz
+        # I don't think these actually happen in the wild yet. would need to
+        # revise at_uri_to_web_url to handle it.
+        # https://atproto.com/specs/nsid#nsid-syntax-variations
+        ('at://did:plc:foo/a.b#c/123', False),
     ]:
       with self.subTest(input=input):
         self.assertEqual(expected, AT_URI_PATTERN.match(input) is not None)
@@ -663,6 +719,8 @@ class BlueskyTest(testutil.TestCase):
     for obj, at_uri in (
         ('', ''),
         ('at://foo/bar/baz', 'at://foo/bar/baz'),
+        ('at://did:fo:o/app.bsky.actor.profile/self',
+         'at://did:fo:o/app.bsky.actor.profile/self'),
         ('https://bsky.app/profile/foo/post/bar', 'at://foo/app.bsky.feed.post/bar'),
         ('baz biff', ''),
         ({}, ''),
@@ -678,52 +736,61 @@ class BlueskyTest(testutil.TestCase):
   @patch('requests.get')
   def test_from_as1_to_strong_ref_client_value_false(self, mock_get):
     ref = {
-      'uri': 'at://did:foo/app.bsky.feed.post/bar',
-      'cid': 'my-syd',
+      'uri': 'at://did:fo:o/app.bsky.feed.post/bar',
+      'cid': 'sydddddd',
     }
     mock_get.return_value = requests_response({**ref, 'value': {'x': 'y'}})
 
     self.assertEqual(ref, from_as1_to_strong_ref({
-      'url': 'https://bsky.app/profile/did:foo/post/bar',
+      'url': 'https://bsky.app/profile/did:fo:o/post/bar',
     }, client=self.bs._client, value=False))
 
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Afoo&collection=app.bsky.feed.post&rkey=bar')
+                     '?repo=did%3Afo%3Ao&collection=app.bsky.feed.post&rkey=bar')
 
   @patch('requests.get')
   def test_from_as1_to_strong_ref_client_value_true(self, mock_get):
     record = {
-      'uri': 'at://did:foo/app.bsky.feed.post/bar',
-      'cid': 'my-syd',
+      'uri': 'at://did:fo:o/app.bsky.feed.post/bar',
+      'cid': 'sydddddd',
       'value': {'x': 'y'},
     }
     mock_get.return_value = requests_response(record)
 
     self.assertEqual(record, from_as1_to_strong_ref({
-      'url': 'https://bsky.app/profile/did:foo/post/bar',
+      'url': 'https://bsky.app/profile/did:fo:o/post/bar',
     }, client=self.bs._client, value=True))
 
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Afoo&collection=app.bsky.feed.post&rkey=bar')
+                     '?repo=did%3Afo%3Ao&collection=app.bsky.feed.post&rkey=bar')
 
   @patch('requests.get')
   def test_from_as1_to_strong_ref_client_resolve_handle_to_did(self, mock_get):
     mock_get.side_effect = [
-      requests_response({'did': 'did:alice'}),  # resolveHandle
-      requests_response({'cid': 'my-syd'}),     # getRecord
+      # resolveHandle
+      requests_response({'did': 'did:al:ice'}),
+      # getRecord
+      requests_response({
+        'cid': 'sydddddd',
+        'uri': 'at://did:fo:o/x.y.z/a',
+        'value': {},
+      }),
     ]
 
-    self.assertEqual({'cid': 'my-syd'},
-                     from_as1_to_strong_ref(
-                       {'url': 'https://bsky.app/profile/foo/post/bar'},
-                       client=self.bs._client))
+    self.assertEqual({
+      'cid': 'sydddddd',
+      'uri': 'at://did:fo:o/x.y.z/a',
+    }, from_as1_to_strong_ref({
+      'url': 'https://bsky.app/profile/foo.com/post/bar',
+      'cid': 'sydddddd',
+    }, client=self.bs._client))
 
-    self.assert_call(mock_get, 'com.atproto.identity.resolveHandle?handle=foo')
+    self.assert_call(mock_get, 'com.atproto.identity.resolveHandle?handle=foo.com')
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Aalice&collection=app.bsky.feed.post&rkey=bar')
+                     '?repo=did%3Aal%3Aice&collection=app.bsky.feed.post&rkey=bar')
 
   def test_from_as1_missing_objectType_or_verb(self):
     for obj in [
@@ -747,10 +814,10 @@ class BlueskyTest(testutil.TestCase):
   def test_from_as1_post_out_type_postView(self):
     expected = copy.deepcopy(POST_VIEW_BSKY)
     got = self.from_as1(POST_AS, out_type='app.bsky.feed.defs#postView')
-    expected['record']['fooOriginalUrl'] = 'https://bsky.app/profile/did:alice/post/tid'
+    expected['record']['fooOriginalUrl'] = 'https://bsky.app/profile/did:al:ice/post/tid'
     self.assert_equals(expected, got)
 
-  def test_from_as1_post_feed_view(self):
+  def test_to_as1_post_feed_view(self):
     self.assert_equals(POST_AUTHOR_PROFILE_AS['object'], to_as1(POST_FEED_VIEW_BSKY))
 
   def test_from_as1_post_out_type_feedViewPost(self):
@@ -775,7 +842,7 @@ class BlueskyTest(testutil.TestCase):
       '$type': 'app.bsky.feed.post',
       'text': '_some html_',
       'fooOriginalText': '<em>some html</em>',
-      'fooOriginalUrl': 'https://bsky.app/profile/did:alice/post/tid',
+      'fooOriginalUrl': 'https://bsky.app/profile/did:al:ice/post/tid',
       'createdAt': '2007-07-07T03:04:05.000Z',
     }, self.from_as1(post_as))
 
@@ -788,7 +855,7 @@ class BlueskyTest(testutil.TestCase):
     # no facet
     self.assert_equals(POST_BSKY, self.from_as1(post_as))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=15)
   def test_from_as1_post_truncate_adds_link_embed(self):
     self.assert_equals({
@@ -822,7 +889,7 @@ class BlueskyTest(testutil.TestCase):
       'content': content,
     })['text'])
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=45)
   def test_from_as1_post_with_images_truncated_puts_original_post_link_in_text(self):
     content = 'hello hello hello hello hello hello hello hello hello'
@@ -848,12 +915,15 @@ class BlueskyTest(testutil.TestCase):
       'url': 'http://my.inst/post',
     }, blobs={NEW_BLOB_URL: NEW_BLOB}))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=51)
   def test_from_as1_post_with_images_video_truncated_original_post_link_in_text(self):
+    content = 'lots of text adding up to longer than fifty one characters ok ok'
+    blobs = {NEW_BLOB_URL: {**NEW_BLOB, 'mimeType': 'video/mp4'}}
     self.assert_equals({
-      **POST_BSKY_IMAGES,
-      'text': 'My […] \n\n[Video] [Original post on my.inst]',
+      **POST_BSKY_VIDEO,
+      'text': 'lots of text […] \n\n[Original post on my.inst]',
+      'fooOriginalText': content,
       'fooOriginalUrl': 'http://my.inst/post',
       'facets': [{
         '$type': 'app.bsky.richtext.facet',
@@ -862,20 +932,18 @@ class BlueskyTest(testutil.TestCase):
           'uri': 'http://my.inst/post',
         }],
         'index': {
-          'byteStart': 9,
-          'byteEnd': 45,
+          'byteStart': 19,
+          'byteEnd': 47,
         },
       }],
     }, self.from_as1({
       **POST_AS_IMAGES['object'],
+      **POST_AS_VIDEO['object'],
+      'content': content,
       'url': 'http://my.inst/post',
-      'attachments': [{
-        'objectType': 'video',
-        'stream': {'url': 'https://a/cool/vid'},
-      }],
-    }, blobs={NEW_BLOB_URL: NEW_BLOB}))
+    }, blobs=blobs))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=40)
   def test_from_as1_post_with_images_removes_facets_beyond_truncation(self):
     content = 'hello <a href="http://foo">link</a> goodbye goodbye goodbye goodbye'
@@ -901,7 +969,7 @@ class BlueskyTest(testutil.TestCase):
       'url': 'http://my.inst/post',
     }, blobs={NEW_BLOB_URL: NEW_BLOB}))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=40)
   def test_from_as1_post_with_images_truncates_facet_that_overlaps_truncation(self):
     content = '<a href="http://foo">hello link text</a> goodbye goodbye goodbye goodbye'
@@ -937,7 +1005,7 @@ class BlueskyTest(testutil.TestCase):
       'url': 'http://my.inst/post',
     }, blobs={NEW_BLOB_URL: NEW_BLOB}))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=15)
   def test_from_as1_post_truncate_fallback_to_id_if_no_url(self):
     self.assert_equals({
@@ -1025,7 +1093,7 @@ class BlueskyTest(testutil.TestCase):
     self.assert_equals({
       **POST_BSKY_FACET_MENTION,
       'fooOriginalText': content,
-      'fooOriginalUrl': 'https://bsky.app/profile/did:alice/post/tid',
+      'fooOriginalUrl': 'https://bsky.app/profile/did:al:ice/post/tid',
     }, self.from_as1({
       **POST_AS['object'],
       'content': content,
@@ -1243,7 +1311,44 @@ class BlueskyTest(testutil.TestCase):
       'content': content,
     }))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
+  def test_from_as1_html_link_with_url_as_text(self):
+    content = 'foo <a href="http://post">http://post</a> baz'
+    self.assert_equals({
+      '$type': 'app.bsky.feed.post',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      'text': 'foo http://post baz',
+      'fooOriginalText': content,
+      'facets': [{
+        '$type': 'app.bsky.richtext.facet',
+        'features': [{
+          '$type': 'app.bsky.richtext.facet#link',
+          'uri': 'http://post',
+        }],
+        'index': {
+          'byteStart': 4,
+          'byteEnd': 15,
+        },
+      }],
+    }, self.from_as1({
+      'objectType': 'note',
+      'content': content,
+    }))
+
+  def test_from_as1_html_markdown_link(self):
+    # too complicated for our markdown link regexp, should give up and skip it
+    content = 'foo [http://bar](<a href="http://post">baz</a>) biff'
+    self.assert_equals({
+      '$type': 'app.bsky.feed.post',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      # not great, but tolerable
+      'text': 'foo http://bar) biff',
+      'fooOriginalText': content,
+    }, self.from_as1({
+      'objectType': 'note',
+      'content': content,
+    }))
+
+  @patch.dict(LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
               maxGraphemes=12)
   def test_from_as1_html_omit_link_facet_after_truncation(self):
     content = 'foo bar <a href="http://post">baaaaaaaz</a>'
@@ -1305,6 +1410,19 @@ class BlueskyTest(testutil.TestCase):
       }],
     }))
 
+  def test_from_as1_hashtag_special_chars(self):
+    self.assert_equals({
+      '$type': 'app.bsky.feed.post',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      'text': '',
+    }, from_as1({
+      'objectType': 'note',
+      'tags': [{
+        'objectType': 'hashtag',
+        'displayName': 'a**b(',
+      }],
+    }))
+
   def test_from_as1_post_with_image(self):
     expected = copy.deepcopy(POST_BSKY_IMAGES)
     del expected['embed']
@@ -1335,11 +1453,40 @@ class BlueskyTest(testutil.TestCase):
       'image': ['http://pic/1', NEW_BLOB_URL],
     }, blobs={NEW_BLOB_URL: NEW_BLOB}))
 
+  def test_from_as1_post_with_video(self):
+    expected = copy.deepcopy(POST_BSKY_VIDEO)
+    del expected['embed']
+    self.assert_equals(expected, self.from_as1(POST_AS_VIDEO))
+
+  def test_from_as1_post_with_video_blobs(self):
+    expected = copy.deepcopy(POST_BSKY_VIDEO)
+    blobs = {NEW_BLOB_URL: {**NEW_BLOB, 'mimeType': 'video/mp4'}}
+    self.assert_equals(expected, self.from_as1(POST_AS_VIDEO, blobs=blobs))
+
+  def test_from_as1_post_with_video_blobs_cid_instance(self):
+    cid = CID.decode(NEW_BLOB['ref']['$link'])
+    expected = copy.deepcopy(POST_BSKY_VIDEO)
+    expected['embed']['video']['ref'] = cid
+    blobs = {NEW_BLOB_URL: {
+      **NEW_BLOB,
+      'ref': cid,
+      'mimeType': 'video/mp4',
+    }}
+    self.assert_equals(expected, self.from_as1(POST_AS_VIDEO, blobs=blobs))
+
   def test_from_as1_post_view_with_image(self):
     expected = copy.deepcopy(POST_VIEW_BSKY_IMAGES)
     del expected['record']['embed']
-    expected['record']['fooOriginalUrl'] = 'https://bsky.app/profile/did:alice/post/tid'
+    expected['record']['fooOriginalUrl'] = 'https://bsky.app/profile/did:al:ice/post/tid'
     got = self.from_as1(POST_AS_IMAGES, out_type='app.bsky.feed.defs#postView')
+    self.assert_equals(expected, got)
+
+  def test_from_as1_post_view_with_video(self):
+    expected = copy.deepcopy(POST_VIEW_BSKY_VIDEO)
+    expected['record']['fooOriginalUrl'] = 'https://bsky.app/profile/did:al:ice/post/tid'
+    blobs = {NEW_BLOB_URL: {**NEW_BLOB, 'mimeType': 'video/mp4'}}
+    got = self.from_as1(POST_AS_VIDEO, out_type='app.bsky.feed.defs#postView',
+                        blobs=blobs)
     self.assert_equals(expected, got)
 
   def test_from_as1_object_vs_activity(self):
@@ -1455,6 +1602,27 @@ class BlueskyTest(testutil.TestCase):
       'tags': [TAG_LINK],
     }))
 
+  def test_from_as1_facet_link_with_title(self):
+    self.assert_equals({
+      '$type': 'app.bsky.feed.post',
+      'text': 'foo baz',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      'facets': [{
+        'features': [{
+          '$type': 'app.bsky.richtext.facet#link',
+          'uri': 'http://li/nk',
+        }],
+        '$type': 'app.bsky.richtext.facet',
+        'index': {
+          'byteStart': 4,
+          'byteEnd': 7,
+        },
+      }],
+    }, from_as1({
+      'objectType': 'note',
+      'content': 'foo <a href="http://li/nk" title="bar">baz</a>',
+    }))
+
   def test_from_as1_post_langs(self):
     self.assert_equals({
       '$type': 'app.bsky.feed.post',
@@ -1549,8 +1717,28 @@ class BlueskyTest(testutil.TestCase):
       'displayName': 'My big article',
     }, as_embed=True))
 
+  def test_from_as1_note_as_embed_no_display_name_blank_title(self):
+    self.assert_equals({
+      '$type': 'app.bsky.feed.post',
+      'text': '',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      'embed': {
+        '$type': 'app.bsky.embed.external',
+        'external': {
+          '$type': 'app.bsky.embed.external#external',
+          'uri': 'http://my/article',
+          'title': '',
+          'description': 'My big article',
+        },
+      },
+    }, from_as1({
+      'objectType': 'note',
+      'url': 'http://my/article',
+      'content': 'My big article',
+    }, as_embed=True))
+
   def test_from_as1_repost(self):
-    self.assert_equals(REPOST_BSKY, self.from_as1(REPOST_AS))
+    self.assert_equals(REPOST_BSKY_NO_CIDS, self.from_as1(REPOST_AS))
 
   def test_from_as1_repost_reasonRepost(self):
     got = self.from_as1(REPOST_AS, out_type='app.bsky.feed.defs#reasonRepost')
@@ -1564,74 +1752,84 @@ class BlueskyTest(testutil.TestCase):
     repost_as = copy.deepcopy(REPOST_AS)
     del repost_as['object']['id']
 
-    repost_bsky = copy.deepcopy(REPOST_BSKY)
+    repost_bsky = copy.deepcopy(REPOST_BSKY_NO_CIDS)
     repost_bsky['subject']['uri'] = 'at://alice.com/app.bsky.feed.post/tid'
     self.assert_equals(repost_bsky, self.from_as1(repost_as))
 
   @patch('requests.get')
   def test_from_as1_repost_client(self, mock_get):
     mock_get.return_value = requests_response({
-      'uri': 'at://did:alice/app.bsky.feed.post/tid',
-      'cid': 'my-syd',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+      'cid': 'sydddddd',
       'value': {},
     })
 
     expected = copy.deepcopy(REPOST_BSKY)
-    expected['subject']['cid'] = 'my-syd'
+    expected['subject']['cid'] = 'sydddddd'
     self.assert_equals(expected, self.from_as1(REPOST_AS, client=self.bs._client))
 
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Aalice&collection=app.bsky.feed.post&rkey=tid')
+                     '?repo=did%3Aal%3Aice&collection=app.bsky.feed.post&rkey=tid')
 
   def test_from_as1_reply(self):
-    self.assert_equals(REPLY_BSKY, self.from_as1(REPLY_AS))
-    self.assert_equals(REPLY_BSKY, self.from_as1(REPLY_AS['object']))
+    self.assert_equals(REPLY_BSKY_NO_CIDS, self.from_as1(REPLY_AS))
+    self.assert_equals(REPLY_BSKY_NO_CIDS, self.from_as1(REPLY_AS['object']))
 
   def test_from_as1_reply_to_website(self):
-    self.assert_equals(REPLY_BSKY, self.from_as1(REPLY_TO_WEBSITE_AS))
-    self.assert_equals(REPLY_BSKY, self.from_as1(REPLY_TO_WEBSITE_AS['object']))
+    self.assert_equals(REPLY_BSKY_NO_CIDS, self.from_as1(REPLY_TO_WEBSITE_AS))
+    self.assert_equals(REPLY_BSKY_NO_CIDS, self.from_as1(REPLY_TO_WEBSITE_AS['object']))
     reply_to_website_at_uri = copy.deepcopy(REPLY_TO_WEBSITE_AS)
-    reply_to_website_at_uri['object']['inReplyTo'][2]['url'] = 'at://did:alice/app.bsky.feed.post/parent-tid'
-    self.assert_equals(REPLY_BSKY, self.from_as1(reply_to_website_at_uri))
+    reply_to_website_at_uri['object']['inReplyTo'][2]['url'] = 'at://did:al:ice/app.bsky.feed.post/parent-tid'
+    self.assert_equals(REPLY_BSKY_NO_CIDS, self.from_as1(reply_to_website_at_uri))
 
   def test_from_as1_reply_postView(self):
+    expected = copy.deepcopy(REPLY_POST_VIEW_BSKY)
+    expected.update({
+      'cid': '',
+      'record': REPLY_BSKY_NO_CIDS,
+    })
+
     for input in REPLY_AS, REPLY_AS['object']:
       got = self.from_as1(input, out_type='app.bsky.feed.defs#postView')
-      self.assert_equals(REPLY_POST_VIEW_BSKY, got)
+      self.assert_equals(expected, got, ignore=['author'])
 
   def test_from_as1_reply_convert_bsky_app_url(self):
     reply_as = copy.deepcopy(REPLY_AS)
     reply_as['object']['inReplyTo'] = \
-      'https://bsky.app/profile/did:alice/post/parent-tid'
-    self.assert_equals(REPLY_BSKY, self.from_as1(reply_as))
+      'https://bsky.app/profile/did:al:ice/post/parent-tid'
+    self.assert_equals(REPLY_BSKY_NO_CIDS, self.from_as1(reply_as))
 
   @patch('requests.get')
   def test_from_as1_reply_client(self, mock_get):
     mock_get.return_value = requests_response({
-      'uri': 'at://did:alice/app.bsky.feed.post/parent-tid',
-      'cid': 'my-syd',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/parent-tid',
+      'cid': 'sydddddd',
       'value': {},
     })
 
     expected = copy.deepcopy(REPLY_BSKY)
-    expected['reply']['root']['cid'] = expected['reply']['parent']['cid'] = 'my-syd'
+    expected['reply']['root']['cid'] = expected['reply']['parent']['cid'] = 'sydddddd'
     self.assert_equals(expected, self.from_as1(REPLY_AS['object'], client=self.bs._client))
 
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Aalice&collection=app.bsky.feed.post&rkey=parent-tid')
+                     '?repo=did%3Aal%3Aice&collection=app.bsky.feed.post&rkey=parent-tid')
 
   @patch('requests.get', return_value=requests_response({
-    'uri': 'at://did:alice/app.bsky.feed.post/parent-tid',
-    'cid': 'my-parent-syd',
+    'uri': 'at://did:al:ice/app.bsky.feed.post/parent-tid',
+    'cid': 'my+parent+syd',
     'value': {
       **POST_BSKY,
       'reply': {
         '$type': 'app.bsky.feed.post#replyRef',
+        'parent': {
+          'uri': 'at://did:bo:b/app.bsky.feed.post/root-tid',
+          'cid': 'my+root+syd',
+        },
         'root': {
-          'uri': 'at://did:bob/app.bsky.feed.post/root-tid',
-          'cid': 'my-root-syd',
+          'uri': 'at://did:bo:b/app.bsky.feed.post/root-tid',
+          'cid': 'my+root+syd',
         },
       },
     },
@@ -1642,19 +1840,19 @@ class BlueskyTest(testutil.TestCase):
       'reply': {
         '$type': 'app.bsky.feed.post#replyRef',
         'parent': {
-          'uri': 'at://did:alice/app.bsky.feed.post/parent-tid',
-          'cid': 'my-parent-syd',
+          'uri': 'at://did:al:ice/app.bsky.feed.post/parent-tid',
+          'cid': 'my+parent+syd',
         },
         'root': {
-          'uri': 'at://did:bob/app.bsky.feed.post/root-tid',
-          'cid': 'my-root-syd',
+          'uri': 'at://did:bo:b/app.bsky.feed.post/root-tid',
+          'cid': 'my+root+syd',
         },
       },
     }, self.from_as1(REPLY_AS['object'], client=self.bs._client))
 
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Aalice&collection=app.bsky.feed.post&rkey=parent-tid')
+                     '?repo=did%3Aal%3Aice&collection=app.bsky.feed.post&rkey=parent-tid')
 
   def test_from_as1_reply_not_bluesky_atproto(self):
     with self.assertRaises(ValueError):
@@ -1667,18 +1865,16 @@ class BlueskyTest(testutil.TestCase):
   @patch('requests.get')
   def test_from_as1_like_client(self, mock_get):
     mock_get.return_value = requests_response({
-      'uri': 'at://did:alice/app.bsky.feed.post/tid',
-      'cid': 'my-syd',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+      'cid': 'sydddddd',
       'value': {},
     })
 
-    expected = copy.deepcopy(LIKE_BSKY)
-    expected['subject']['cid'] = 'my-syd'
-    self.assert_equals(expected, self.from_as1(LIKE_AS, client=self.bs._client))
+    self.assert_equals(LIKE_BSKY, self.from_as1(LIKE_AS, client=self.bs._client))
 
     self.assert_call(mock_get,
                      'com.atproto.repo.getRecord'
-                     '?repo=did%3Aalice&collection=app.bsky.feed.post&rkey=tid')
+                     '?repo=did%3Aal%3Aice&collection=app.bsky.feed.post&rkey=tid')
 
   def test_from_as1_follow(self):
     self.assertEqual(FOLLOW_BSKY, self.from_as1(FOLLOW_AS))
@@ -1734,44 +1930,76 @@ class BlueskyTest(testutil.TestCase):
   def test_from_as1_block(self):
     self.assert_equals({
       '$type': 'app.bsky.graph.block',
-      'subject': 'https://bsky.app/profile/did:eve',
+      'subject': 'https://bsky.app/profile/did:ev:e',
       'createdAt': '2022-01-02T03:04:05.000Z'
     }, self.from_as1({
       'objectType': 'activity',
       'verb': 'block',
       'actor': 'http://alice',
-      'object': 'https://bsky.app/profile/did:eve',
+      'object': 'https://bsky.app/profile/did:ev:e',
     }))
 
   # https://docs.joinmastodon.org/spec/activitypub/#Flag
   @patch('requests.get', return_value=requests_response({
-    'uri': 'at://did:alice/app.bsky.feed.post/tid',
-    'cid': 'my-syd',
+    'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'cid': 'sydddddd',
     'value': {},
   }))
   def test_from_as1_flag(self, _):
+    for objs in (
+        ['https://bsky.app/profile/did:al:ice/post/tid',
+         'http://other/post'],
+        ['http://other/post',
+         'https://bsky.app/profile/did:al:ice/post/tid'],
+        # Mastodon sends Flags with both author and post when you report a post,
+        # or report an author starting from one of their posts. prefer post if
+        # available.
+        ['did:al:ice',
+         'at://did:al:ice/app.bsky.feed.post/tid'],
+    ):
+      with self.subTest(objs=objs):
+        self.assert_equals({
+          '$type': 'com.atproto.moderation.createReport#input',
+          'reasonType': 'com.atproto.moderation.defs#reasonOther',
+          'reason': 'Please take a look at this user and their posts',
+          'subject': {
+            '$type': 'com.atproto.repo.strongRef',
+            'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+            'cid': 'sydddddd',
+          },
+        }, self.from_as1({
+          'objectType': 'activity',
+          'verb': 'flag',
+          'id': 'http://flag',
+          'actor': 'http://alice',
+          'object': objs,
+          'content': 'Please take a look at this user and their posts',
+          # note that this is the user being reported
+          'to': 'did:bo:b',
+        }, client=self.bs._client))
+
+    # DID (repo) object
     self.assert_equals({
       '$type': 'com.atproto.moderation.createReport#input',
       'reasonType': 'com.atproto.moderation.defs#reasonOther',
-      'reason': 'Please take a look at this user and their posts',
+      'reason': '',
       'subject': {
-        '$type': 'com.atproto.repo.strongRef',
-        'uri': 'at://did:alice/app.bsky.feed.post/tid',
-        'cid': 'my-syd',
+        '$type': 'com.atproto.admin.defs#repoRef',
+        'did': 'did:al:ice',
       },
     }, self.from_as1({
       'objectType': 'activity',
       'verb': 'flag',
-      'id': 'http://flag',
-      'actor': 'http://alice',
-      'object': [
-        'https://bsky.app/profile/did:alice/post/tid',
-        'http://other/ post',
-      ],
-      'content': 'Please take a look at this user and their posts',
-      # note that this is the user being reported
-      'to': 'did:bob',
+      'object': 'did:al:ice',
     }, client=self.bs._client))
+
+    # no object
+    with self.assertRaises(ValueError):
+      self.from_as1({
+        'objectType': 'activity',
+        'verb': 'flag',
+        'actor': 'http://alice',
+      })
 
   def test_from_as1_collection(self):
     self.assert_equals({
@@ -1794,20 +2022,20 @@ class BlueskyTest(testutil.TestCase):
   def test_from_as1_add_to_collection(self):
     self.assert_equals({
       '$type': 'app.bsky.graph.listitem',
-      'subject': 'did:bob',
-      'list': 'at://did:alice/app.bsky.graph.list/tid',
+      'subject': 'did:bo:b',
+      'list': 'at://did:al:ice/app.bsky.graph.list/tid',
       'createdAt': '2022-01-02T03:04:05.000Z'
     }, self.from_as1({
       'objectType': 'activity',
       'verb': 'add',
-      'actor': 'did:alice',
-      'object': 'did:bob',
-      'target': 'at://did:alice/app.bsky.graph.list/tid',
+      'actor': 'did:al:ice',
+      'object': 'did:bo:b',
+      'target': 'at://did:al:ice/app.bsky.graph.list/tid',
     }))
 
   @patch('requests.get', return_value=requests_response({
-    'uri': 'at://did:alice/app.bsky.feed.post/tid',
-    'cid': 'my-syd',
+    'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'cid': 'sydddddd',
     'value': {},
   }))
   def test_from_as1_quote_post_with_image(self, mock_get):
@@ -1820,8 +2048,8 @@ class BlueskyTest(testutil.TestCase):
         'record': {
           '$type': 'app.bsky.embed.record',
           'record': {
-            'uri': 'at://did:alice/app.bsky.feed.post/tid',
-            'cid': 'my-syd',
+            'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+            'cid': 'sydddddd',
           },
         },
         'media': {
@@ -1837,10 +2065,10 @@ class BlueskyTest(testutil.TestCase):
     }, self.from_as1({
       'objectType': 'note',
       'id': 'https://orig/post',
-      'content': '<p>late morning ...<br><br>RE: </span><a href=\"https://makai.chaotic.ninja/notes/9stkybisvk\">https://makai.chaotic.ninja/notes/9stkybisvk</a></p>',
+      'content': '<p>late morning ...<br><br>RE: </span><a href="https://makai.chaotic.ninja/notes/9stkybisvk">https://makai.chaotic.ninja/notes/9stkybisvk</a></p>',
       'attachments': [{
         'objectType': 'note',
-        'url': 'https://bsky.app/profile/did:x/post/yz',
+        'url': 'https://bsky.app/profile/did:x:y/post/ab',
       }],
       'image': [{
         'objectType': 'image',
@@ -1851,7 +2079,38 @@ class BlueskyTest(testutil.TestCase):
 
     self.assert_call(
       mock_get,
-      'com.atproto.repo.getRecord?repo=did%3Ax&collection=app.bsky.feed.post&rkey=yz')
+      'com.atproto.repo.getRecord?repo=did%3Ax%3Ay&collection=app.bsky.feed.post&rkey=ab')
+
+  @patch('requests.get', return_value=requests_response({
+    'uri': 'at://did:x:y/app.bsky.feed.post/ab',
+    'cid': 'sydddddd',
+    'value': {},
+  }))
+  def test_from_as1_quote_post_too_long(self, mock_get):
+    self.assert_equals({
+      '$type': 'app.bsky.feed.post',
+      'text': 'Okay, The summertide event started off pretty boring for me. I think it gets better as time goes on. I especially like the screentime of Wanderer/Scara (Why I wanted to play in the first place-). Overall I think its pretty good, though a bit slow',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      'embed': {
+        '$type': 'app.bsky.embed.record',
+        'record': {
+          'uri': 'at://did:x:y/app.bsky.feed.post/ab',
+          'cid': 'sydddddd',
+        },
+      },
+    }, self.from_as1({
+      'objectType': 'note',
+      'content': 'Okay, The summertide event started off pretty boring for me. I think it gets better as time goes on. I especially like the screentime of Wanderer/Scara (Why I wanted to play in the first place-). Overall I think its pretty good, though a bit slow<br><br>RE: <a href="https://social.atiusamy.com/notes/1234567890123456">https://social.atiusamy.com/notes/1234567890123456</a>',
+      'attachments': [{
+        'objectType': 'note',
+        'url': 'https://social.atiusamy.com/notes/1234567890123456',
+        'id': 'at://did:x:y/app.bsky.feed.post/ab',
+      }],
+    }, client=self.bs._client), ignore=['fooOriginalText', 'fooOriginalUrl'])
+
+    self.assert_call(
+      mock_get,
+      'com.atproto.repo.getRecord?repo=did%3Ax%3Ay&collection=app.bsky.feed.post&rkey=ab')
 
   def test_from_as1_sensitive(self):
     self.assert_equals({
@@ -1867,7 +2126,33 @@ class BlueskyTest(testutil.TestCase):
       'sensitive': True,
     }))
 
-  def test_maybe_validate_truncate(self):
+  def test_chat_from_as1_dm(self):
+    self.assert_equals({
+      '$type': 'chat.bsky.convo.defs#messageInput',
+      'text': 'hello world',
+      'createdAt': '2022-01-02T03:04:05.000Z',
+      'fooOriginalText': 'hello world',
+    }, self.from_as1({
+      'objectType': 'note',
+      'actor': 'did:al:ice',
+      'to': ['did:bo:b'],
+      'content': 'hello world',
+    }))
+
+  def test_chat_from_as1_dm_long(self):
+    long = 'X' * LEXRPC_TRUNCATE.defs['chat.bsky.convo.defs#messageInput']['properties']['text']['maxGraphemes']
+    self.assert_equals({
+      '$type': 'chat.bsky.convo.defs#messageInput',
+      'text': long,
+      'createdAt': '2022-01-02T03:04:05.000Z',
+    }, from_as1({
+      'objectType': 'note',
+      'actor': 'did:al:ice',
+      'to': ['did:bo:b'],
+      'content': long,
+    }))
+
+  def test_truncate(self):
     short = 'x' * 63
     long = 'x' * 65
 
@@ -1931,7 +2216,16 @@ class BlueskyTest(testutil.TestCase):
       'username': 'alice.com',
       'url': 'https://bsky.app/profile/alice.com',
       'urls': ['https://bsky.app/profile/alice.com', 'https://alice.com/'],
-      }, to_as1(ACTOR_PROFILE_VIEW_BSKY))
+    }, to_as1(ACTOR_PROFILE_VIEW_BSKY))
+
+  def test_to_as1_profile_view_email_address_in_description(self):
+    self.assert_equals({
+      **ACTOR_AS,
+      'summary': 'ᵖᵒᵉᵗʳʸ • ᵃʳᵗ ♡︎ －\n📩 hi＠gmail.com ',
+    }, to_as1({
+      **ACTOR_PROFILE_VIEW_BSKY,
+        'description': 'ᵖᵒᵉᵗʳʸ • ᵃʳᵗ ♡︎ －\n📩 hi＠gmail.com ',
+    }), ignore=('url', 'urls', 'username'))
 
   def test_to_as1_profile_no_repo_did_handle_or_pds(self):
     self.assert_equals({
@@ -2066,6 +2360,27 @@ class BlueskyTest(testutil.TestCase):
   def test_to_as1_post_view_with_image(self):
     self.assert_equals(POST_AS_IMAGES['object'], to_as1(POST_VIEW_BSKY_IMAGES))
 
+  def test_to_as1_post_with_video(self):
+    self.assert_equals(trim_nulls({
+      **POST_AS_VIDEO['object'],
+      'author': 'did:plc:foo',
+      'id': None,
+      'url': None,
+    }), to_as1(POST_BSKY_VIDEO, repo_did='did:plc:foo'))
+
+  def test_to_as1_post_with_video_no_repo_did(self):
+    self.assert_equals(trim_nulls({
+      **POST_AS_VIDEO['object'],
+      'attachments': None,
+      'id': None,
+      'url': None,
+    }), to_as1(POST_BSKY_VIDEO))
+
+  def test_to_as1_post_view_with_video(self):
+    expected = copy.deepcopy(POST_AS_VIDEO['object'])
+    del expected['attachments'][0]['stream']['mimeType']
+    self.assert_equals(expected, to_as1(POST_VIEW_BSKY_VIDEO, repo_did='did:plc:foo'))
+
   def test_to_as1_feedViewPost(self):
     expected = copy.deepcopy(POST_AUTHOR_AS['object'])
     expected['author'].update({
@@ -2089,7 +2404,7 @@ class BlueskyTest(testutil.TestCase):
     self.assert_equals({
       'objectType': 'activity',
       'verb': 'share',
-      'object': 'at://did:alice/app.bsky.feed.post/tid',
+      'object': 'at://did:al:ice/app.bsky.feed.post/tid',
       'published': '2022-01-02T03:04:05.000Z',
     }, to_as1(REPOST_BSKY))
 
@@ -2098,8 +2413,8 @@ class BlueskyTest(testutil.TestCase):
       'objectType': 'activity',
       'verb': 'share',
       'id': 'at://alice.com/app.bsky.feed.repost/123',
-      'url': 'https://bsky.app/profile/did:alice/post/tid#reposted_by_alice.com',
-      'object': 'at://did:alice/app.bsky.feed.post/tid',
+      'url': 'https://bsky.app/profile/did:al:ice/post/tid#reposted_by_alice.com',
+      'object': 'at://did:al:ice/app.bsky.feed.post/tid',
       'published': '2022-01-02T03:04:05.000Z',
     }, to_as1(REPOST_BSKY, uri='at://alice.com/app.bsky.feed.repost/123'))
 
@@ -2110,13 +2425,13 @@ class BlueskyTest(testutil.TestCase):
     self.assert_equals({
       'objectType': 'service',
       'displayName': 'Mai Lyst',
-      'id': 'at://did:alice/app.bsky.graph.list/987',
-      'url': 'https://bsky.app/profile/did:alice/lists/987',
+      'id': 'at://did:al:ice/app.bsky.graph.list/987',
+      'url': 'https://bsky.app/profile/did:al:ice/lists/987',
       'summary': 'a lyst',
       'image': 'https://cdn.bsky.app/lyst@jpeg',
       'author': {
         'objectType': 'person',
-        'id': 'did:alice',
+        'id': 'did:al:ice',
         'url': 'https://bsky.app/profile/alice.com',
         'urls': ['https://bsky.app/profile/alice.com', 'https://alice.com/'],
         'username': 'alice.com',
@@ -2125,10 +2440,10 @@ class BlueskyTest(testutil.TestCase):
     }, to_as1({
       '$type': 'app.bsky.graph.defs#listView',
       'avatar': 'https://cdn.bsky.app/lyst@jpeg',
-      'cid': '',
+      'cid': 'sydddddd',
       'creator': {
         'avatar': 'https://cdn.bsky.app/alice@jpeg',
-        'did': 'did:alice',
+        'did': 'did:al:ice',
         'name': 'Alice',
         'handle': 'alice.com',
       },
@@ -2136,7 +2451,7 @@ class BlueskyTest(testutil.TestCase):
       'indexedAt': '2023-11-06T21:08:33.376Z',
       'name': 'Mai Lyst',
       'purpose': 'app.bsky.graph.defs#curatelist',
-      'uri': 'at://did:alice/app.bsky.graph.list/987',
+      'uri': 'at://did:al:ice/app.bsky.graph.list/987',
     }))
 
   def test_to_as1_missing_objectType(self):
@@ -2199,8 +2514,8 @@ class BlueskyTest(testutil.TestCase):
       'content': 'something to say',
       'attachments': [{
         'objectType': 'note',
-        'id': 'at://did:alice/app.bsky.feed.post/tid',
-        'url': 'https://bsky.app/profile/did:alice/post/tid',
+        'id': 'at://did:al:ice/app.bsky.feed.post/tid',
+        'url': 'https://bsky.app/profile/did:al:ice/post/tid',
       }],
     }, to_as1({
       '$type': 'app.bsky.feed.post',
@@ -2208,8 +2523,8 @@ class BlueskyTest(testutil.TestCase):
       'embed': {
         '$type': 'app.bsky.embed.record',
         'record': {
-          'uri': 'at://did:alice/app.bsky.feed.post/tid',
-          'cid': 'my-syd',
+          'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+          'cid': 'sydddddd',
         },
       },
     }))
@@ -2221,8 +2536,8 @@ class BlueskyTest(testutil.TestCase):
       'author': 'did:plc:foo',
       'attachments': [{
         'objectType': 'note',
-        'id': 'at://did:alice/app.bsky.feed.post/tid',
-        'url': 'https://bsky.app/profile/did:alice/post/tid',
+        'id': 'at://did:al:ice/app.bsky.feed.post/tid',
+        'url': 'https://bsky.app/profile/did:al:ice/post/tid',
       }],
       'image': [NEW_BLOB_URL],
     }, to_as1({
@@ -2233,8 +2548,8 @@ class BlueskyTest(testutil.TestCase):
         'record': {
           '$type': 'app.bsky.embed.record',
           'record': {
-            'uri': 'at://did:alice/app.bsky.feed.post/tid',
-            'cid': 'my-syd',
+            'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+            'cid': 'sydddddd',
           },
         },
         'media': {
@@ -2305,60 +2620,60 @@ class BlueskyTest(testutil.TestCase):
     }))
 
   def test_to_as1_follow(self):
-    self.assertEqual(FOLLOW_AS, to_as1(FOLLOW_BSKY, repo_did='did:alice'))
+    self.assertEqual(FOLLOW_AS, to_as1(FOLLOW_BSKY, repo_did='did:al:ice'))
 
   def test_to_as1_block(self):
     self.assert_equals({
       'objectType': 'activity',
       'verb': 'block',
-      'object': 'did:eve',
+      'object': 'did:ev:e',
     }, to_as1({
       '$type': 'app.bsky.graph.block',
-      'subject': 'did:eve',
+      'subject': 'did:ev:e',
       'createdAt': '2022-01-02T03:04:05.000Z'
     }))
 
   def test_to_as1_blockedPost(self):
     self.assert_equals({
       'objectType': 'note',
-      'id': 'at://did:alice/app.bsky.feed.post/123',
-      'url': 'https://bsky.app/profile/did:alice/post/123',
-      'author': 'did:alice',
+      'id': 'at://did:al:ice/app.bsky.feed.post/123',
+      'url': 'https://bsky.app/profile/did:al:ice/post/123',
+      'author': 'did:al:ice',
       'blocked': True,
     }, to_as1({
       '$type' : 'app.bsky.feed.defs#blockedPost',
-      'uri': 'at://did:alice/app.bsky.feed.post/123',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/123',
       'blocked': True,
       'blockedAuthor': {
-        'did': 'did:alice',
+        'did': 'did:al:ice',
       },
     }))
 
   @patch('requests.get', return_value=requests_response({
-    'uri': 'at://did:alice/app.bsky.feed.post/tid',
-    'cid': 'my-syd',
+    'uri': 'at://did:al:ice/app.bsky.feed.post/tid',
+    'cid': 'sydddddd',
     'value': {},
   }))
   def test_to_as1_repo_strongRef(self, _):
-    self.assert_equals('at://did:alice/app.bsky.feed.post/123', to_as1({
+    self.assert_equals('at://did:al:ice/app.bsky.feed.post/123', to_as1({
       '$type' : 'com.atproto.repo.strongRef',
-      'uri': 'at://did:alice/app.bsky.feed.post/123',
-      'cid': 'my-syd',
+      'uri': 'at://did:al:ice/app.bsky.feed.post/123',
+      'cid': 'sydddddd',
     }))
 
   def test_to_as1_repoRef(self):
-    self.assert_equals('did:alice', to_as1({
+    self.assert_equals('did:al:ice', to_as1({
       '$type' : 'com.atproto.admin.defs#repoRef',
-      'did': 'did:alice',
+      'did': 'did:al:ice',
     }))
 
   # https://docs.joinmastodon.org/spec/activitypub/#Flag
-  def test_to_as1_createReport(self):
+  def test_to_as1_createReport_post(self):
     self.assert_equals({
       'objectType': 'activity',
       'verb': 'flag',
-      'actor': 'did:bob',
-      'object': 'at://did:alice/app.bsky.feed.post/123',
+      'actor': 'did:bo:b',
+      'object': 'at://did:al:ice/app.bsky.feed.post/123',
       'content': 'Other: Please take a look at this user and their posts',
     }, to_as1({
       '$type': 'com.atproto.moderation.createReport#input',
@@ -2366,15 +2681,29 @@ class BlueskyTest(testutil.TestCase):
       'reason': 'Please take a look at this user and their posts',
       'subject': {
         '$type': 'com.atproto.repo.strongRef',
-        'uri': 'at://did:alice/app.bsky.feed.post/123',
+        'uri': 'at://did:al:ice/app.bsky.feed.post/123',
         'cid': 'syd',
       },
-    }, repo_did='did:bob'))
+    }, repo_did='did:bo:b'))
+
+  def test_to_as1_createReport_repo(self):
+    self.assert_equals({
+      'objectType': 'activity',
+      'verb': 'flag',
+      'object': 'did:al:ice',
+    }, to_as1({
+      '$type': 'com.atproto.moderation.createReport#input',
+      'subject': {
+        '$type': 'com.atproto.admin.defs#repoRef',
+        'did': 'did:al:ice',
+      },
+      'reasonType': '',
+    }))
 
   def test_to_as1_feed_generator(self):
     self.assert_equals({
       'objectType': 'service',
-      'id': 'at://did:foo/app.bsky.feed.generator/123',
+      'id': 'at://did:fo:o/app.bsky.feed.generator/123',
       'author': 'did:plc:foo',
       'generator': 'did:web:skyfeed.me',
       'displayName': 'skyfeeeed',
@@ -2383,9 +2712,9 @@ class BlueskyTest(testutil.TestCase):
         'url': NEW_BLOB_URL,
       }],
       'published': '2024-01-09T00:22:39.703Z',
-      'url': 'https://bsky.app/profile/did:foo/feed/123',
+      'url': 'https://bsky.app/profile/did:fo:o/feed/123',
       'urls': [
-        'https://bsky.app/profile/did:foo/feed/123',
+        'https://bsky.app/profile/did:fo:o/feed/123',
         'https://skyfeed.me/',
       ],
     }, to_as1({
@@ -2395,7 +2724,7 @@ class BlueskyTest(testutil.TestCase):
       'description': 'its-a skyfeed a-me',
       'avatar': NEW_BLOB,
       'createdAt': '2024-01-09T00:22:39.703Z',
-    }, uri='at://did:foo/app.bsky.feed.generator/123', repo_did='did:plc:foo'))
+    }, uri='at://did:fo:o/app.bsky.feed.generator/123', repo_did='did:plc:foo'))
 
   def test_to_as1_feed_generator_no_uri_repo_did(self):
     self.assert_equals({
@@ -2414,8 +2743,8 @@ class BlueskyTest(testutil.TestCase):
   def test_to_as1_list(self):
     self.assert_equals({
       'objectType': 'collection',
-      'id': 'at://did:foo/app.bsky.graph.list/123',
-      'url': 'https://bsky.app/profile/did:foo/lists/123',
+      'id': 'at://did:fo:o/app.bsky.graph.list/123',
+      'url': 'https://bsky.app/profile/did:fo:o/lists/123',
       'displayName': 'My stuff',
       'summary': 'its gud',
       'image': NEW_BLOB_URL,
@@ -2427,30 +2756,54 @@ class BlueskyTest(testutil.TestCase):
       'purpose': 'app.bsky.graph.defs#curatelist',
       'avatar': NEW_BLOB,
       'createdAt': '2001-02-03T04:05:06.000Z',
-    }, uri='at://did:foo/app.bsky.graph.list/123', repo_did='did:plc:foo'))
+    }, uri='at://did:fo:o/app.bsky.graph.list/123', repo_did='did:plc:foo'))
 
   def test_to_as1_listitem(self):
     self.assert_equals({
       'objectType': 'activity',
       'verb': 'add',
-      'id': 'at://did:foo/app.bsky.graph.listitem/123',
-      'actor': 'did:alice',
-      'object': 'did:bob',
-      'target': 'at://did:alice/app.bsky.graph.list/tid',
+      'id': 'at://did:fo:o/app.bsky.graph.listitem/123',
+      'actor': 'did:al:ice',
+      'object': 'did:bo:b',
+      'target': 'at://did:al:ice/app.bsky.graph.list/tid',
       'published': '2001-02-03T04:05:06.000Z',
     }, to_as1({
       '$type': 'app.bsky.graph.listitem',
-      'subject': 'did:bob',
-      'list': 'at://did:alice/app.bsky.graph.list/tid',
+      'subject': 'did:bo:b',
+      'list': 'at://did:al:ice/app.bsky.graph.list/tid',
       'createdAt': '2001-02-03T04:05:06.000Z',
-    }, uri='at://did:foo/app.bsky.graph.listitem/123', repo_did='did:alice'))
+    }, uri='at://did:fo:o/app.bsky.graph.listitem/123', repo_did='did:al:ice'))
 
   def test_blob_to_url(self):
+    # atproto dialect DAG-JSON
     self.assertIsNone(blob_to_url(blob={'foo': 'bar'}, repo_did='x', pds='y'))
-    self.assertEqual(NEW_BLOB_URL, blob_to_url(blob=NEW_BLOB,
-                                               repo_did='did:plc:foo'))
-    self.assertEqual(OLD_BLOB_URL, blob_to_url(blob=OLD_BLOB,
-                                               repo_did='did:plc:foo'))
+    self.assertEqual(NEW_BLOB_URL, blob_to_url(blob=NEW_BLOB, repo_did='did:plc:foo'))
+
+    # string base32-encoded CID in ref field
+    cid_str = NEW_BLOB['ref']['$link']
+    self.assertEqual(NEW_BLOB_URL, blob_to_url(blob={
+      **NEW_BLOB,
+      'ref': cid_str,
+    }, repo_did='did:plc:foo'))
+
+    # raw bytes CID in ref field
+    self.assertEqual(NEW_BLOB_URL, blob_to_url(blob={
+      **NEW_BLOB,
+      'ref': bytes(CID.decode(cid_str)),
+    }, repo_did='did:plc:foo'))
+
+    # CID instance
+    self.assertEqual(NEW_BLOB_URL, blob_to_url(blob={
+      **NEW_BLOB,
+      'ref': CID.decode(cid_str),
+    }, repo_did='did:plc:foo'))
+
+  def test_blob_cid(self):
+    cid = NEW_BLOB['ref']['$link']
+    self.assertEqual(cid, blob_cid(NEW_BLOB))
+    self.assertEqual(cid, blob_cid({**NEW_BLOB, 'ref': cid}))
+    self.assertEqual(cid, blob_cid({**NEW_BLOB, 'ref': CID.decode(cid)}))
+    self.assertEqual(cid, blob_cid({**NEW_BLOB, 'ref': bytes(CID.decode(cid))}))
 
   def test_to_as1_sensitive_content_warning(self):
     self.assert_equals({
@@ -2466,6 +2819,32 @@ class BlueskyTest(testutil.TestCase):
            {'val' : 'porn'},
          ],
       },
+    }))
+
+  def test_chat_to_as1_messageInput(self):
+    self.assert_equals({
+      'objectType': 'note',
+      'content': 'hello world',
+    }, to_as1({
+      '$type': 'chat.bsky.convo.defs#messageInput',
+      'text': 'hello world',
+    }))
+
+  def test_chat_to_as1_messageView(self):
+    self.assert_equals({
+      'objectType': 'note',
+      'id': 'at://did:al:ice/chat.bsky.convo.defs.messageView/xyz',
+      'author': 'did:al:ice',
+      'content': 'hello world',
+      'published': '2001-02-03T04:05:06.000Z',
+      'to': ['?'],
+    }, to_as1({
+      '$type': 'chat.bsky.convo.defs#messageView',
+      'rev': '5',
+      'id': 'xyz',
+      'text': 'hello world',
+      'sender': {'did': 'did:al:ice'},
+      'sentAt': '2001-02-03T04:05:06.000Z',
     }))
 
   def test_constructor_access_token(self):
@@ -2503,6 +2882,7 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.get')
   def test_get_activities_friends(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       'cursor': 'timestamp::cid',
       'feed': [POST_FEED_VIEW_BSKY, REPOST_BSKY_FEED_VIEW_POST],
@@ -2517,13 +2897,14 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.get')
   def test_get_activities_activity_id(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       'thread': THREAD_BSKY,
     })
 
     self.assert_equals([POST_AUTHOR_PROFILE_AS],
-                       self.bs.get_activities(activity_id='at://id'))
-    self.assert_call(mock_get, 'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fid&depth=1')
+                       self.bs.get_activities(activity_id='at://i.d'))
+    self.assert_call(mock_get, 'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fi.d&depth=1')
 
   def test_get_activities_bad_activity_id(self):
     with self.assertRaises(ValueError):
@@ -2531,9 +2912,10 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.get')
   def test_get_activities_self_user_id(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       'cursor': 'timestamp::cid',
-      'feed': [POST_AUTHOR_BSKY],
+      'feed': [{'post': POST_AUTHOR_BSKY}],
     })
 
     self.assert_equals([POST_AUTHOR_PROFILE_AS],
@@ -2542,16 +2924,18 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.get')
   def test_get_activities_prefers_did(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       'feed': [],
     })
 
-    self.bs.did = 'did:alice'
+    self.bs.did = 'did:al:ice'
     self.assert_equals([], self.bs.get_activities(group_id=SELF))
-    self.assert_call(mock_get, 'app.bsky.feed.getAuthorFeed?actor=did%3Aalice')
+    self.assert_call(mock_get, 'app.bsky.feed.getAuthorFeed?actor=did%3Aal%3Aice')
 
   @patch('requests.get')
   def test_get_activities_with_likes(self, mock_get):
+    self.bs._client._validate = False
     mock_get.side_effect = [
       requests_response({
         'cursor': 'timestamp::cid',
@@ -2559,7 +2943,7 @@ class BlueskyTest(testutil.TestCase):
       }),
       requests_response({
         'cursor': 'timestamp::cid',
-        'uri': 'at://did/app.bsky.feed.post/tid',
+        'uri': 'at://did:dy:d/app.bsky.feed.post/tid',
         'likes': [GET_LIKES_LIKE_BSKY]
       })
     ]
@@ -2571,11 +2955,12 @@ class BlueskyTest(testutil.TestCase):
     )
     self.assert_call(mock_get, 'app.bsky.feed.getTimeline')
     self.assert_call(mock_get,
-        'app.bsky.feed.getLikes?uri=at%3A%2F%2Fdid%3Aalice%2Fapp.bsky.feed.post%2Ftid')
-    self.assert_equals(1, cache.get('ABL at://did:alice/app.bsky.feed.post/tid'))
+        'app.bsky.feed.getLikes?uri=at%3A%2F%2Fdid%3Aal%3Aice%2Fapp.bsky.feed.post%2Ftid')
+    self.assert_equals(1, cache.get('ABL at://did:al:ice/app.bsky.feed.post/tid'))
 
   @patch('requests.get')
   def test_get_activities_with_reposts(self, mock_get):
+    self.bs._client._validate = False
     mock_get.side_effect = [
       requests_response({
         'cursor': 'timestamp::cid',
@@ -2583,7 +2968,7 @@ class BlueskyTest(testutil.TestCase):
       }),
       requests_response({
         'cursor': 'timestamp::cid',
-        'uri': 'at://did/app.bsky.feed.post/tid',
+        'uri': 'at://did:dy:d/app.bsky.feed.post/tid',
         'repostedBy': [ACTOR_PROFILE_VIEW_BSKY]
       })
     ]
@@ -2595,11 +2980,12 @@ class BlueskyTest(testutil.TestCase):
     )
     self.assert_call(mock_get, 'app.bsky.feed.getTimeline')
     self.assert_call(mock_get,
-        'app.bsky.feed.getRepostedBy?uri=at%3A%2F%2Fdid%3Aalice%2Fapp.bsky.feed.post%2Ftid')
-    self.assert_equals(1, cache.get('ABRP at://did:alice/app.bsky.feed.post/tid'))
+        'app.bsky.feed.getRepostedBy?uri=at%3A%2F%2Fdid%3Aal%3Aice%2Fapp.bsky.feed.post%2Ftid')
+    self.assert_equals(1, cache.get('ABRP at://did:al:ice/app.bsky.feed.post/tid'))
 
   @patch('requests.get')
   def test_get_activities_include_shares(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       'cursor': 'timestamp::cid',
       'feed': [POST_FEED_VIEW_BSKY, REPOST_BSKY_FEED_VIEW_POST],
@@ -2612,6 +2998,7 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.get')
   def test_get_activities_with_replies(self, mock_get):
+    self.bs._client._validate = False
     mock_get.side_effect = [
       requests_response({
         'cursor': 'timestamp::cid',
@@ -2627,11 +3014,53 @@ class BlueskyTest(testutil.TestCase):
                        self.bs.get_activities(fetch_replies=True, cache=cache))
     self.assert_call(mock_get,'app.bsky.feed.getTimeline')
     self.assert_call(mock_get,
-        'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fdid%3Aalice%2Fapp.bsky.feed.post%2Ftid')
-    self.assert_equals(1, cache.get('ABR at://did:alice/app.bsky.feed.post/tid'))
+        'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fdid%3Aal%3Aice%2Fapp.bsky.feed.post%2Ftid')
+    self.assert_equals(1, cache.get('ABR at://did:al:ice/app.bsky.feed.post/tid'))
+
+  @patch('requests.get')
+  def test_get_activities_replies_starter_pack_view_basic(self, mock_get):
+    self.bs._client._validate = False
+    mock_get.side_effect = [
+      requests_response({
+        'cursor': 'timestamp::cid',
+        'feed': [POST_FEED_VIEW_WITH_REPLIES_BSKY],
+      }),
+      requests_response({
+        'thread': {
+          '$type': 'app.bsky.feed.defs#threadViewPost',
+          'post': POST_VIEW_BSKY,
+          'author': {'did': 'did:al:ice', 'handle': 'alice.com'},
+          'record': {},
+          'replies': [{
+            '$type': 'app.bsky.feed.defs#threadViewPost',
+            'post': {
+              'uri': 'at://did:dy:d/app.bsky.feed.post/tid',
+              'cid': 'sydddddd',
+              'author': {'did': 'did:dy:d', 'handle': 'dy.d'},
+              'record': {},
+              'embed': STARTER_PACK_EMBED,
+              'indexedAt': '2022-01-02T03:04:05.000Z',
+            },
+          }],
+        },
+      }),
+    ]
+
+    cache = {}
+    got = self.bs.get_activities(fetch_replies=True, cache=cache)
+
+    expected = copy.deepcopy(THREAD_AS)
+    del expected['object']['replies']
+    self.assert_equals([expected], got)
+
+    self.assert_call(mock_get,'app.bsky.feed.getTimeline')
+    self.assert_call(mock_get,
+        'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fdid%3Aal%3Aice%2Fapp.bsky.feed.post%2Ftid')
+    self.assert_equals(1, cache.get('ABR at://did:al:ice/app.bsky.feed.post/tid'))
 
   @patch('requests.get')
   def test_get_activities_replies_not_found_blocked(self, mock_get):
+    self.bs._client._validate = False
     mock_get.side_effect = [
       requests_response({
         # 'cursor': 'timestamp::cid',
@@ -2642,15 +3071,15 @@ class BlueskyTest(testutil.TestCase):
           **THREAD_BSKY,
           'replies': [{
             '$type': 'app.bsky.feed.defs#notFoundPost',
-            'uri': 'at://did:bob/app.bsky.feed.post/reply',
+            'uri': 'at://did:bo:b/app.bsky.feed.post/reply',
             'notFound': True,
           }, {
             '$type': 'app.bsky.feed.defs#blockedPost',
-            'uri': 'at://did:eve/app.bsky.feed.post/reply',
+            'uri': 'at://did:ev:e/app.bsky.feed.post/reply',
             'blocked': True,
             'author': {
               '$type': 'app.bsky.feed.defs#blockedAuthor',
-              'did': 'did:eve',
+              'did': 'did:ev:e',
             },
           }],
         },
@@ -2661,15 +3090,30 @@ class BlueskyTest(testutil.TestCase):
     expected['object']['replies'] = {
       'items': [{
         'objectType': 'note',
-        'id': 'tag:bsky.app:at://did:eve/app.bsky.feed.post/reply',
-        'url': 'https://bsky.app/profile/did:eve/post/reply',
+        'id': 'tag:bsky.app:at://did:ev:e/app.bsky.feed.post/reply',
+        'url': 'https://bsky.app/profile/did:ev:e/post/reply',
         'blocked': True,
       }],
     }
     self.assert_equals([expected], self.bs.get_activities(fetch_replies=True))
 
   @patch('requests.get')
+  def test_get_activities_skip_unknown_type(self, mock_get):
+    self.bs._client._validate = False
+    mock_get.side_effect = [
+      requests_response({
+        'cursor': 'timestamp::cid',
+        'feed': [{'post': {
+          **POST_VIEW_BSKY,
+          'embed': STARTER_PACK_EMBED,
+        }}],
+      }),
+    ]
+    self.assert_equals([], self.bs.get_activities())
+
+  @patch('requests.get')
   def test_get_actor(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       **ACTOR_PROFILE_VIEW_BSKY,
       '$type': 'app.bsky.actor.defs#profileViewDetailed',
@@ -2685,6 +3129,7 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.get')
   def test_get_actor_default(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       **ACTOR_PROFILE_VIEW_BSKY,
       '$type': 'app.bsky.actor.defs#profileViewDetailed',
@@ -2696,17 +3141,18 @@ class BlueskyTest(testutil.TestCase):
       'urls': ['https://bsky.app/profile/alice.com', 'https://alice.com/'],
       'username': 'alice.com',
     }, self.bs.get_actor())
-    self.assert_call(mock_get, 'app.bsky.actor.getProfile?actor=did%3Adyd')
+    self.assert_call(mock_get, 'app.bsky.actor.getProfile?actor=did%3Ady%3Ad')
 
   @patch('requests.get')
   def test_get_comment(self, mock_get):
+    self.bs._client._validate = False
     mock_get.return_value = requests_response({
       'thread': THREAD_BSKY,
     })
 
     self.assert_equals(POST_AUTHOR_PROFILE_AS['object'],
-                       self.bs.get_comment(comment_id='at://id'))
-    self.assert_call(mock_get, 'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fid&depth=1')
+                       self.bs.get_comment(comment_id='at://i.d'))
+    self.assert_call(mock_get, 'app.bsky.feed.getPostThread?uri=at%3A%2F%2Fi.d&depth=1')
 
   def test_post_id(self):
     for input, expected in [
@@ -2716,14 +3162,16 @@ class BlueskyTest(testutil.TestCase):
         ('http://foo', None),
         ('https://bsky.app/profile/foo', None),
         ('at://did:plc:foo', None),
-        ('at://did/post/tid', 'at://did/post/tid'),
-        ('https://bsky.app/profile/did/post/tid', 'at://did/app.bsky.feed.post/tid'),
+        ('at://did:dy:d/post/tid', 'at://did:dy:d/post/tid'),
+        ('https://bsky.app/profile/did:dy:d/post/tid',
+         'at://did:dy:d/app.bsky.feed.post/tid'),
     ]:
       with self.subTest(input=input):
         self.assertEqual(expected, self.bs.post_id(input))
 
-  @patch.dict(LEXRPC_BASE.defs['app.bsky.feed.post']['record']['properties']['text'],
-              maxGraphemes=20)
+  @patch.dict(
+    LEXRPC_TRUNCATE.defs['app.bsky.feed.post']['record']['properties']['text'],
+    maxGraphemes=20)
   def test_preview_post(self):
     for content, expected in (
         ('foo ☕ bar', 'foo ☕ bar'),
@@ -2744,8 +3192,11 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.post')
   def test_create_post(self, mock_post):
-    at_uri = 'at://did:me/app.bsky.feed.post/abc123'
-    mock_post.return_value = requests_response({'uri': at_uri})
+    at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
+    mock_post.return_value = requests_response({
+      'uri': at_uri,
+      'cid': 'sydddddd',
+    })
 
     post_as = {
       **POST_AS['object'],
@@ -2783,16 +3234,20 @@ class BlueskyTest(testutil.TestCase):
   @patch('requests.post')
   @patch('requests.get')
   def test_create_reply(self, mock_get, mock_post):
-    post_at_uri = 'at://did:alice/app.bsky.feed.post/parent-tid'
+    post_at_uri = 'at://did:al:ice/app.bsky.feed.post/parent-tid'
     for in_reply_to in [post_at_uri,
-                        'https://bsky.app/profile/did:alice/post/parent-tid']:
+                        'https://bsky.app/profile/did:al:ice/post/parent-tid']:
       with self.subTest(in_reply_to=in_reply_to):
         mock_get.return_value = requests_response({
           'uri': post_at_uri,
-          'cid': 'my-syd',
+          'cid': 'reply+syd',
+          'value': {},
         })
-        reply_at_uri = 'at://did:me/app.bsky.feed.post/abc123'
-        mock_post.return_value = requests_response({'uri': reply_at_uri})
+        reply_at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
+        mock_post.return_value = requests_response({
+          'uri': reply_at_uri,
+          'cid': 'sydddddd',
+        })
 
         self.assert_equals({
           'id': reply_at_uri,
@@ -2804,7 +3259,7 @@ class BlueskyTest(testutil.TestCase):
 
         reply_bsky = copy.deepcopy(REPLY_BSKY)
         reply_bsky['reply']['root']['cid'] = \
-          reply_bsky['reply']['parent']['cid'] = 'my-syd'
+          reply_bsky['reply']['parent']['cid'] = 'reply+syd'
         del reply_bsky['fooOriginalText']
         del reply_bsky['fooOriginalUrl']
         self.assert_call(mock_post, 'com.atproto.repo.createRecord', json={
@@ -2813,21 +3268,29 @@ class BlueskyTest(testutil.TestCase):
           'record': reply_bsky,
         })
 
+  def test_create_reply_to_non_bluesky_error(self):
+    resp = self.bs.create({
+      **REPLY_AS['object'],
+      'inReplyTo': 'https://snarfed.org/post',
+    })
+    self.assertTrue(resp.abort)
+    self.assertEqual("inReplyTo https://snarfed.org/post doesn't look like Bluesky/ATProto", resp.error_plain)
+
   def test_preview_reply(self):
-    for in_reply_to in ['at://did:alice/app.bsky.feed.post/parent-tid',
-                        'https://bsky.app/profile/did:alice/post/parent-tid']:
+    for in_reply_to in ['at://did:al:ice/app.bsky.feed.post/parent-tid',
+                        'https://bsky.app/profile/did:al:ice/post/parent-tid']:
       with self.subTest(in_reply_to=in_reply_to):
         preview = self.bs.preview_create({
           **REPLY_AS['object'],
           'inReplyTo': in_reply_to,
         })
-        self.assertIn('<span class="verb">reply</span> to <a href="https://bsky.app/profile/did:alice/post/parent-tid">this post</a>:', preview.description)
+        self.assertIn('<span class="verb">reply</span> to <a href="https://bsky.app/profile/did:al:ice/post/parent-tid">this post</a>:', preview.description)
         self.assert_equals('I hereby reply to this', preview.content)
 
   # TODO: requires detecting and discarding non-atproto inReplyTo in from_as1
   # @patch('requests.post')
   # def test_create_non_atproto_reply(self, mock_post):
-  #   at_uri = 'at://did:me/app.bsky.feed.post/abc123'
+  #   at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
   #   mock_post.return_value = requests_response({'uri': at_uri})
 
   #   self.assert_equals({
@@ -2856,44 +3319,50 @@ class BlueskyTest(testutil.TestCase):
   def test_create_like(self, mock_get, mock_post):
     mock_get.return_value = requests_response({
       'uri': LIKE_AS['object'],
-      'cid': 'my-syd',
+      'cid': 'sydddddd',
+      'value': {},
     })
-    mock_post.return_value = requests_response({'uri': LIKE_AS['id']})
+    mock_post.return_value = requests_response({
+      'uri': LIKE_AS['id'],
+      'cid': 'sydddddd',
+    })
 
     self.assert_equals({
       'id': LIKE_AS['id'],
-      'url': 'https://bsky.app/profile/did:alice/post/tid/liked-by',
+      'url': 'https://bsky.app/profile/did:al:ice/post/tid/liked-by',
     }, self.bs.create(LIKE_AS).content)
 
-    like_bsky = copy.deepcopy(LIKE_BSKY)
-    like_bsky['subject']['cid'] = 'my-syd'
     self.assert_call(mock_post, 'com.atproto.repo.createRecord', json={
       'repo': self.bs.did,
       'collection': 'app.bsky.feed.like',
-      'record': like_bsky,
+      'record': LIKE_BSKY,
     })
 
   def test_preview_like(self):
     preview = self.bs.preview_create(LIKE_AS)
-    self.assertIn('<span class="verb">like</span> <a href="https://bsky.app/profile/did:alice/post/tid">this post</a>.', preview.description)
+    self.assertIn('<span class="verb">like</span> <a href="https://bsky.app/profile/did:al:ice/post/tid">this post</a>.', preview.description)
 
   @patch('requests.post')
   @patch('requests.get')
   def test_create_repost(self, mock_get, mock_post):
     mock_get.return_value = requests_response({
       'uri': REPOST_AS['object']['id'],
-      'cid': 'my-syd',
+      'cid': 'repost+syd',
+      'value': {},
     })
     at_uri = 'at://alice.com/app.bsky.feed.repost/123'
-    mock_post.return_value = requests_response({'uri': at_uri})
+    mock_post.return_value = requests_response({
+      'uri': at_uri,
+      'cid': 'sydddddd',
+    })
 
     self.assert_equals({
       'id': at_uri,
-      'url': 'https://bsky.app/profile/did:alice/post/tid/reposted-by',
+      'url': 'https://bsky.app/profile/did:al:ice/post/tid/reposted-by',
     }, self.bs.create(REPOST_AS).content)
 
     repost_bsky = copy.deepcopy(REPOST_BSKY)
-    repost_bsky['subject']['cid'] = 'my-syd'
+    repost_bsky['subject']['cid'] = 'repost+syd'
     self.assert_call(mock_post, 'com.atproto.repo.createRecord', json={
       'repo': self.bs.did,
       'collection': 'app.bsky.feed.repost',
@@ -2917,10 +3386,10 @@ class BlueskyTest(testutil.TestCase):
     mock_get.return_value = requests_response(
       'pic data', headers={'Content-Type': 'my/pic'})
 
-    at_uri = 'at://did:me/app.bsky.feed.post/abc123'
+    at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
     mock_post.side_effect = [
       requests_response({'blob': NEW_BLOB}),
-      requests_response({'uri': at_uri}),
+      requests_response({'uri': at_uri, 'cid': 'sydddddd'}),
     ]
 
     self.assert_equals({
@@ -2975,7 +3444,7 @@ class BlueskyTest(testutil.TestCase):
   # TODO
   # @patch('requests.post')
   # def test_create_with_too_many_media(self, mock_post):
-  #   at_uri = 'at://did:me/app.bsky.feed.post/abc123'
+  #   at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
   #   mock_post.side_effect = [
   #     requests_response({'blob': NEW_BLOB}),
   #     requests_response({'uri': at_uri}),
@@ -3003,8 +3472,11 @@ class BlueskyTest(testutil.TestCase):
 
   @patch('requests.post')
   def test_create_bookmark(self, mock_post):
-    at_uri = 'at://did:me/app.bsky.feed.post/abc123'
-    mock_post.return_value = requests_response({'uri': at_uri})
+    at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
+    mock_post.return_value = requests_response({
+      'uri': at_uri,
+      'cid': 'sydddddd',
+    })
 
     activity = {
       'objectType': 'activity',
@@ -3045,8 +3517,11 @@ class BlueskyTest(testutil.TestCase):
   @patch('requests.post')
   @patch('requests.get', return_value=requests_response({'did': 'did:plc:foo'}))
   def test_create_mention(self, _, mock_post):
-    at_uri = 'at://did:me/app.bsky.feed.post/abc123'
-    mock_post.return_value = requests_response({'uri': at_uri})
+    at_uri = 'at://did:plc:me/app.bsky.feed.post/abc123'
+    mock_post.return_value = requests_response({
+      'uri': at_uri,
+      'cid': 'sydddddd',
+    })
 
     content = 'foo <a href="https://bsky.app/profile/you.com">@you.com</a> bar'
     self.assert_equals({
@@ -3082,7 +3557,7 @@ class BlueskyTest(testutil.TestCase):
   def test_delete(self, mock_post):
     mock_post.return_value = requests_response({})
 
-    got = self.bs.delete('at://did:dyd/app.bsky.feed.post/abc123')
+    got = self.bs.delete('at://did:dy:d/app.bsky.feed.post/abc123')
     self.assert_call(mock_post, 'com.atproto.repo.deleteRecord', json={
       'repo': self.bs.did,
       'collection': 'app.bsky.feed.post',
@@ -3090,7 +3565,7 @@ class BlueskyTest(testutil.TestCase):
     })
 
   def test_preview_delete(self):
-    got = self.bs.preview_delete('at://did:dyd/app.bsky.feed.post/abc123')
-    self.assertIn('<span class="verb">delete</span> <a href="https://bsky.app/profile/did:dyd/post/abc123">this</a>.', got.description)
+    got = self.bs.preview_delete('at://did:dy:d/app.bsky.feed.post/abc123')
+    self.assertIn('<span class="verb">delete</span> <a href="https://bsky.app/profile/did:dy:d/post/abc123">this</a>.', got.description)
     self.assertIsNone(got.error_plain)
     self.assertIsNone(got.error_html)
